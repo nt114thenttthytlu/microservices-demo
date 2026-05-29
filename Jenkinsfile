@@ -19,7 +19,7 @@ pipeline {
         )
         booleanParam(name: 'PUSH_IMAGES',        defaultValue: true,                  description: 'Push Docker images to Harbor?')
         booleanParam(name: 'CLEANUP_LOCAL',       defaultValue: true,                  description: 'Remove local Docker images after push?')
-        string(name: 'HARBOR_REGISTRY',          defaultValue: 'localhost',            description: 'Harbor registry URL (e.g., 192.168.1.100)')
+        string(name: 'HARBOR_REGISTRY',          defaultValue: '13.212.31.75:80',            description: 'Harbor registry URL (e.g., 192.168.1.100)')
         string(name: 'SONARQUBE_URL',            defaultValue: 'http://sonarqube:9000',description: 'SonarQube server URL')
         string(name: 'KEEP_TAGS',                defaultValue: '5',                    description: 'Number of recent tags to keep in Harbor per service (0 = skip Harbor cleanup)')
     }
@@ -128,7 +128,7 @@ pipeline {
                     echo "✓ Pushing images (tag: ${imageTag})..."
 
                     sh '''
-                        curl -sf -k https://${HARBOR_REGISTRY}/api/v2.0/health \
+                        curl -sf https://${HARBOR_REGISTRY}/api/v2.0/health \
                             && echo "  ✓ Harbor reachable" \
                             || echo "  ⚠ Harbor may not be reachable"
                     '''
@@ -273,7 +273,7 @@ def cleanupHarborOldTags(String service, int keepN) {
         SVC="${service}"
         KEEP=${keepN}
 
-        API="https://\${REGISTRY}/api/v2.0/projects/\${PROJECT}/repositories/\${SVC}/artifacts"
+        API="http://\${REGISTRY}/api/v2.0/projects/\${PROJECT}/repositories/\${SVC}/artifacts"
 
         # Fetch artifacts sorted by push_time desc, page size 100 (adjust if you have more)
         ARTIFACTS=\$(curl -sf -k -u "\${HARBOR_USER}:\${HARBOR_PASS}" \
