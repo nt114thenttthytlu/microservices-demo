@@ -1,5 +1,5 @@
 output "public_ip" {
-  description = "Public IP of the Jenkins/Harbor VM"
+  description = "Public IP of the Jenkins/Harbor EC2"
   value       = module.jenkins.public_ip
 }
 
@@ -14,16 +14,16 @@ output "harbor_url_http" {
 }
 
 output "harbor_url_https" {
-  description = "URL to access Harbor (HTTPS) - may show certificate warning"
+  description = "URL to access Harbor (HTTPS)"
   value       = "https://${module.jenkins.public_ip}:443"
 }
 
 output "harbor_registry" {
-  description = "Harbor Docker registry address (use with docker login)"
+  description = "Harbor Docker registry address"
   value       = "${module.jenkins.public_ip}:5000"
 }
 
 output "ssh_connection" {
-  description = "SSH command to connect to VM"
-  value       = "ssh -i <your_ssh_key> azureuser@${module.jenkins.public_ip}"
+  description = "SSH command to connect to EC2"
+  value       = "ssh -i <your-key.pem> ubuntu@${module.jenkins.public_ip}"
 }

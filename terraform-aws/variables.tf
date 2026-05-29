@@ -35,5 +35,5 @@ variable "node_group_max_size" {
 }
 
 variable "instance_types" {
-  default = ["t3.medium"]
+  default = ["t3.micro"]
 }

@@ -1,151 +1,145 @@
-resource "azurerm_resource_group" "rg" {
-  name     = "jenkins-rg"
-  location = var.location
+provider "aws" {
+  region = var.aws_region
 }
 
-resource "azurerm_virtual_network" "vnet" {
-  name                = "jenkins-vnet"
-  address_space       = ["10.0.0.0/16"]
-  location            = var.location
-  resource_group_name = azurerm_resource_group.rg.name
-}
+resource "aws_vpc" "vpc" {
+  cidr_block           = "10.0.0.0/16"
+  enable_dns_support   = true
+  enable_dns_hostnames = true
 
-resource "azurerm_subnet" "subnet" {
-  name                 = "jenkins-subnet"
-  resource_group_name  = azurerm_resource_group.rg.name
-  virtual_network_name = azurerm_virtual_network.vnet.name
-  address_prefixes     = ["10.0.1.0/24"]
-}
-
-resource "azurerm_public_ip" "public_ip" {
-  name                = "jenkins-ip"
-  location            = var.location
-  resource_group_name = azurerm_resource_group.rg.name
-  allocation_method   = "Static"
-}
-
-resource "azurerm_network_security_group" "nsg" {
-  name                = "jenkins-nsg"
-  location            = var.location
-  resource_group_name = azurerm_resource_group.rg.name
-
-  security_rule {
-    name                       = "allow-jenkins"
-    priority                   = 1001
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    destination_port_range     = "8080"
-    source_port_range          = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "allow-ssh"
-    priority                   = 1002
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    destination_port_range     = "22"
-    source_port_range          = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "allow-harbor-http"
-    priority                   = 1003
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    destination_port_range     = "80"
-    source_port_range          = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "allow-harbor-https"
-    priority                   = 1004
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    destination_port_range     = "443"
-    source_port_range          = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "allow-harbor-registry"
-    priority                   = 1005
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    destination_port_range     = "5000"
-    source_port_range          = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
+  tags = {
+    Name = "jenkins-vpc"
   }
 }
 
-resource "azurerm_network_interface" "nic" {
-  name                = "jenkins-nic"
-  location            = var.location
-  resource_group_name = azurerm_resource_group.rg.name
+resource "aws_internet_gateway" "igw" {
+  vpc_id = aws_vpc.vpc.id
 
-  ip_configuration {
-    name                          = "internal"
-    subnet_id                     = azurerm_subnet.subnet.id
-    private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = azurerm_public_ip.public_ip.id
+  tags = {
+    Name = "jenkins-igw"
   }
 }
 
-resource "azurerm_network_interface_security_group_association" "nsg_assoc" {
-  network_interface_id      = azurerm_network_interface.nic.id
-  network_security_group_id = azurerm_network_security_group.nsg.id
+resource "aws_subnet" "subnet" {
+  vpc_id                  = aws_vpc.vpc.id
+  cidr_block              = "10.0.1.0/24"
+  map_public_ip_on_launch = true
+  availability_zone       = "${var.aws_region}a"
+
+  tags = {
+    Name = "jenkins-subnet"
+  }
 }
 
-resource "azurerm_linux_virtual_machine" "vm" {
-  name                = "jenkins-vm"
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = var.location
-  size                = var.vm_size
+resource "aws_route_table" "rt" {
+  vpc_id = aws_vpc.vpc.id
 
-  admin_username = var.admin_username
-
-  network_interface_ids = [
-    azurerm_network_interface.nic.id,
-  ]
-
-  admin_ssh_key {
-    username   = var.admin_username
-    public_key = var.ssh_public_key
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.igw.id
   }
 
-  os_disk {
-    caching              = "ReadWrite"
-    storage_account_type = "Standard_LRS"
+  tags = {
+    Name = "jenkins-rt"
+  }
+}
+
+resource "aws_route_table_association" "rta" {
+  subnet_id      = aws_subnet.subnet.id
+  route_table_id = aws_route_table.rt.id
+}
+
+resource "aws_security_group" "sg" {
+  name        = "jenkins-sg"
+  description = "Allow Jenkins, SSH, Harbor"
+  vpc_id      = aws_vpc.vpc.id
+
+  ingress {
+    description = "Jenkins"
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
-  source_image_reference {
-    publisher = "Canonical"
-    offer     = "0001-com-ubuntu-server-jammy"
-    sku       = "22_04-lts"
-    version   = "latest"
+  ingress {
+    description = "SSH"
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
   }
 
-  custom_data = base64encode(templatefile("${path.module}/installing_jenkins.sh", {
-    harbor_hostname             = var.harbor_hostname
-    harbor_admin_password       = var.harbor_admin_password
-    harbor_admin_email          = var.harbor_admin_email
-    harbor_https_port           = var.harbor_https_port
-    harbor_http_port            = var.harbor_http_port
-    harbor_ssl_cert_country     = var.harbor_ssl_cert_country
-    harbor_ssl_cert_state       = var.harbor_ssl_cert_state
-    harbor_ssl_cert_city        = var.harbor_ssl_cert_city
+  ingress {
+    description = "Harbor HTTP"
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Harbor HTTPS"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description = "Harbor Registry"
+    from_port   = 5000
+    to_port     = 5000
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    from_port   = 0
+    to_port     = 0
+    protocol    = "-1"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "jenkins-sg"
+  }
+}
+
+resource "aws_key_pair" "key" {
+  key_name   = "jenkins-key"
+  public_key = var.ssh_public_key
+}
+
+resource "aws_instance" "vm" {
+  ami                    = var.ubuntu_ami
+  instance_type          = var.instance_type
+  subnet_id              = aws_subnet.subnet.id
+  vpc_security_group_ids = [aws_security_group.sg.id]
+  key_name               = aws_key_pair.key.key_name
+
+  user_data = templatefile("${path.module}/installing_jenkins.sh", {
+    harbor_hostname              = var.harbor_hostname
+    harbor_admin_password        = var.harbor_admin_password
+    harbor_admin_email           = var.harbor_admin_email
+    harbor_https_port            = var.harbor_https_port
+    harbor_http_port             = var.harbor_http_port
+    harbor_ssl_cert_country      = var.harbor_ssl_cert_country
+    harbor_ssl_cert_state        = var.harbor_ssl_cert_state
+    harbor_ssl_cert_city         = var.harbor_ssl_cert_city
     harbor_ssl_cert_organization = var.harbor_ssl_cert_organization
-  }))
+  })
+
+  tags = {
+    Name = "jenkins-vm"
+  }
+}
+
+resource "aws_eip" "eip" {
+  instance = aws_instance.vm.id
+  domain   = "vpc"
+
+  tags = {
+    Name = "jenkins-eip"
+  }
 }

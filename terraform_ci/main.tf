@@ -1,14 +1,12 @@
 module "jenkins" {
   source = "./modules/jenkins"
 
-  location       = var.location
-  vm_size        = var.vm_size
-  admin_username = var.admin_username
+  aws_region     = var.aws_region
+  instance_type  = var.instance_type
+  ubuntu_ami     = var.ubuntu_ami
   ssh_public_key = var.ssh_public_key
 
-  # Harbor Configuration
-  # If harbor_hostname is empty, use the public IP automatically
-  harbor_hostname              = var.harbor_hostname != "" ? var.harbor_hostname : module.jenkins.public_ip
+  harbor_hostname              = var.harbor_hostname
   harbor_admin_password        = var.harbor_admin_password
   harbor_admin_email           = var.harbor_admin_email
   harbor_https_port            = var.harbor_https_port

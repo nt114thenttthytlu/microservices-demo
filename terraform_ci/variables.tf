@@ -1,30 +1,35 @@
-variable "location" {
-  default = "Southeast Asia"
+variable "aws_region" {
+  default = "ap-southeast-1"
 }
 
-variable "vm_size" {
-  default = "Standard_B2ms"
+variable "instance_type" {
+  default = "t3.micro"
 }
 
-variable "admin_username" {
-  default = "azureuser"
+variable "ubuntu_ami" {
+  description = "Ubuntu 24.04 AMI"
+
+  default = "ami-0a56f8447277affd8"
 }
 
 variable "ssh_public_key" {
   description = "Your SSH public key"
+  type        = string
 }
 
 # ============ Harbor Configuration ============
+
 variable "harbor_hostname" {
   description = "Harbor hostname or IP address (if empty, will use public IP automatically)"
   type        = string
-  default     = "" # Will be auto-filled from VM public IP if left empty
+  default     = ""
 }
 
 variable "harbor_admin_password" {
-  description = "Harbor admin password (keep this secret!)"
+  description = "Harbor admin password"
   type        = string
   sensitive   = true
+
   validation {
     condition     = length(var.harbor_admin_password) >= 8
     error_message = "Harbor admin password must be at least 8 characters long."

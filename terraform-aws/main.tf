@@ -1,17 +1,20 @@
 module "vpc" {
   source = "./modules/vpc"
 
-  project_name = var.name
-  environment  = var.environment
-  vpc_cidr     = var.vpc_cidr
-  region       = var.region
+  name        = var.name
+  environment = var.environment
+  vpc_cidr    = var.vpc_cidr
+  azs = [
+    "${var.region}a",
+    "${var.region}b"
+  ]
 }
 
 module "ecr" {
   source = "./modules/ecr"
 
-  project_name = var.name
-  environment  = var.environment
+  name        = var.name
+  environment = var.environment
 }
 
 module "eks" {
@@ -22,7 +25,7 @@ module "eks" {
   vpc_id          = module.vpc.vpc_id
   private_subnets = module.vpc.private_subnets
   environment     = var.environment
-  project_name    = var.name
+  name            = var.name
 
   node_group_desired_size = var.node_group_desired_size
   node_group_min_size     = var.node_group_min_size
