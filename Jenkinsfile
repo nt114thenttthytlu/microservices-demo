@@ -53,6 +53,26 @@ pipeline {
             }
         }
 
+        stage('Login to Harbor') {
+            when {
+                expression { params.PUSH_IMAGES }
+            }
+            steps {
+                script {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'harbor-creds',
+                        usernameVariable: 'HARBOR_USER',
+                        passwordVariable: 'HARBOR_PASS'
+                    )]) {
+                        sh """
+                            echo $HARBOR_PASS | docker login ${params.HARBOR_REGISTRY} \
+                                -u $HARBOR_USER --password-stdin
+                        """
+                    }
+                }
+            }
+        }
+
         stage('Build Images') {
             steps {
                 script {
@@ -87,9 +107,29 @@ pipeline {
             steps {
                 script {
                     getBuildServices().each { svc ->
+
+                        stage("Push ${svc}") {
+                            sh """
+                                docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
+                                docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest
+                            """
+                        }
+                    }
+                }
+            }
+        }
+
+        stage('Cleanup Local Images') {
+            when {
+                expression { params.CLEANUP_LOCAL }
+            }
+
+            steps {
+                script {
+                    getBuildServices().each { svc ->
                         sh """
-                            docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
-                            docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest
+                            docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} || true
+                            docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest || true
                         """
                     }
                 }
@@ -99,10 +139,13 @@ pipeline {
 
     post {
         always {
-            sh 'docker logout || true'
+            sh "docker logout ${params.HARBOR_REGISTRY} || true"
         }
     }
 }
+
+
+// ===================== FUNCTIONS =====================
 
 def getServiceList() {
     return [
