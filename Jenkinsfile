@@ -44,7 +44,7 @@ pipeline {
 
         string(
             name: 'HARBOR_REGISTRY',
-            defaultValue: '13.212.31.75:80',
+            defaultValue: '3.0.195.225:80',
             description: 'Harbor registry'
         )
 
