@@ -13,28 +13,28 @@ resource "aws_security_group" "main" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["192.168.1.0/24"]
   }
 
   ingress {
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["192.168.1.0/24"]
   }
 
   ingress {
     from_port   = 9000
     to_port     = 9000
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["192.168.1.0/24"]
   }
 
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["0.0.0.0/0"]
+    cidr_blocks = ["192.168.1.0/24"]
   }
 
   egress {
@@ -42,6 +42,11 @@ resource "aws_security_group" "main" {
     to_port     = 0
     protocol    = "-1"
     cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name = "${var.name}-sg"
+    description = "Security group for Jenkins, Harbor, and SonarQube instances"
   }
 }
 
@@ -55,7 +60,7 @@ module "jenkins" {
 
   name          = var.name
   ami           = var.ami
-  instance_type = "t3.micro"
+  instance_type = "c7i-flex.large"
   subnet_id     = module.network.subnet_id
   sg_id         = aws_security_group.main.id
   key_name      = aws_key_pair.key.key_name
