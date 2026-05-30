@@ -6,6 +6,17 @@ resource "aws_instance" "sonar" {
   vpc_security_group_ids = [var.sg_id]
   key_name = var.key_name
 
+  ebs_optimized          = true
+  monitoring = true
+  metadata_options {
+    http_tokens = "required"
+    http_endpoint = "enabled"
+  }
+
+  root_block_device {
+    encrypted = true
+  }
+
   user_data = file("${path.module}/install.sh")
 
   tags = {
