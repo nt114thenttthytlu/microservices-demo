@@ -13,41 +13,48 @@ resource "aws_security_group" "main" {
     from_port   = 22
     to_port     = 22
     protocol    = "tcp"
-    cidr_blocks = ["192.168.1.0/24"]
+    cidr_blocks = [module.network.vpc_cidr]
   }
 
   ingress {
     from_port   = 8080
     to_port     = 8080
     protocol    = "tcp"
-    cidr_blocks = ["192.168.1.0/24"]
+    cidr_blocks = [module.network.vpc_cidr]
   }
 
   ingress {
     from_port   = 9000
     to_port     = 9000
     protocol    = "tcp"
-    cidr_blocks = ["192.168.1.0/24"]
+    cidr_blocks = [module.network.vpc_cidr]
   }
 
   ingress {
     from_port   = 80
     to_port     = 80
     protocol    = "tcp"
-    cidr_blocks = ["192.168.1.0/24"]
+    cidr_blocks = [module.network.vpc_cidr]
   }
 
   egress {
-    from_port   = 0
-    to_port     = 0
-    protocol    = "-1"
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
     cidr_blocks = ["0.0.0.0/0"]
   }
 
   tags = {
-    Name = "${var.name}-sg"
+    Name        = "${var.name}-sg"
     description = "Security group for Jenkins, Harbor, and SonarQube instances"
   }
+}
+
+resource "aws_default_security_group" "this" {
+  vpc_id = module.network.vpc_id
+
+  ingress = []
+  egress  = []
 }
 
 resource "aws_key_pair" "key" {
@@ -86,4 +93,38 @@ module "sonarqube" {
   subnet_id     = module.network.subnet_id
   sg_id         = aws_security_group.main.id
   key_name      = aws_key_pair.key.key_name
+}
+
+resource "aws_flow_log" "this" {
+  log_destination      = aws_cloudwatch_log_group.vpc_flow.arn
+  log_destination_type = "cloud-watch-logs"
+  traffic_type         = "ALL"
+  vpc_id               = module.network.vpc_id
+
+  iam_role_arn = aws_iam_role.flowlog.arn
+}
+
+resource "aws_iam_role" "flowlog" {
+  name = "${var.name}-flowlog-role"
+
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "vpc-flow-logs.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "flowlog" {
+  role       = aws_iam_role.flowlog.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonVPCFlowLogsRole"
+}
+
+resource "aws_cloudwatch_log_group" "vpc_flow" {
+  name              = "/aws/vpc/flowlogs"
+  retention_in_days = 7
 }
