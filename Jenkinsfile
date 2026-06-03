@@ -5,16 +5,16 @@ pipeline {
     agent any
 
     environment {
-        HARBOR_PROJECT = 'sample-microservice'
+        HARBOR_PROJECT  = 'sample-microservice'
         HARBOR_REGISTRY = '3.0.195.225:80'
-        SONAR_HOST_URL = 'http://3.0.195.225:9000'
+        SONAR_HOST_URL  = 'http://52.76.101.147:9000'
 
         DOTNET_ROOT = '/root/.dotnet'
         PATH = "/root/.dotnet:/root/.dotnet/tools:${env.PATH}"
     }
 
     parameters {
-        choice(name: 'BUILD_TARGET', choices: ['all','cartservice','frontend','adservice','checkoutservice','productcatalogservice'])
+        choice(name: 'BUILD_TARGET', choices: ['all', 'cartservice', 'frontend'])
         booleanParam(name: 'PUSH_IMAGES', defaultValue: true)
     }
 
@@ -31,9 +31,9 @@ pipeline {
             steps {
                 script {
                     services = sh(
-                        script: "ls src | grep service || true",
+                        script: "find src -maxdepth 1 -type d -name '*service*' -exec basename {} \\;",
                         returnStdout: true
-                    ).trim().split("\n").findAll { it?.trim() }
+                    ).trim().split("\n")
 
                     echo "Detected services: ${services}"
                 }
@@ -92,14 +92,12 @@ pipeline {
                         ? services
                         : [params.BUILD_TARGET]
 
-                    buildList = buildList.findAll { it?.trim() }
-
                     for (svc in buildList) {
 
-                        def dockerfile = "src/${svc}/src/Dockerfile"
-                        def context = "src/${svc}/src"
-
                         echo "Building service: ${svc}"
+
+                        def dockerfile = "src/${svc}/Dockerfile"
+                        def context = "src/${svc}"
 
                         sh """
                             docker build \
@@ -121,12 +119,7 @@ pipeline {
                         ? services
                         : [params.BUILD_TARGET]
 
-                    buildList = buildList.findAll { it?.trim() }
-
                     for (svc in buildList) {
-
-                        echo "Pushing service: ${svc}"
-
                         sh """
                             docker push ${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
                         """
@@ -150,10 +143,7 @@ pipeline {
                         ? services
                         : [params.BUILD_TARGET]
 
-                    buildList = buildList.findAll { it?.trim() }
-
                     for (svc in buildList) {
-
                         sh """
                             yq e '.image.tag = "${imageTag}"' -i gitops/helm/${svc}/values.yaml
                         """
@@ -180,10 +170,7 @@ pipeline {
                         ? services
                         : [params.BUILD_TARGET]
 
-                    buildList = buildList.findAll { it?.trim() }
-
                     for (svc in buildList) {
-
                         sh """
                             docker rmi ${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} || true
                         """
