@@ -33,7 +33,7 @@ pipeline {
         booleanParam(name: 'CLEANUP_LOCAL', defaultValue: true)
 
         string(name: 'HARBOR_REGISTRY', defaultValue: '3.0.195.225:80')
-        string(name: 'KEEP_TAGS', defaultValue: '5')
+        string(name: 'GITOPS_REPO', defaultValue: 'git@github.com:your-org/gitops-microservices-demo.git')
     }
 
     stages {
@@ -49,6 +49,7 @@ pipeline {
                 script {
                     def gitShort = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     imageTag = "${env.BUILD_NUMBER}-${gitShort}"
+                    echo "Image tag: ${imageTag}"
                 }
             }
         }
@@ -58,17 +59,15 @@ pipeline {
                 expression { params.PUSH_IMAGES }
             }
             steps {
-                script {
-                    withCredentials([usernamePassword(
-                        credentialsId: 'harbor-creds',
-                        usernameVariable: 'HARBOR_USER',
-                        passwordVariable: 'HARBOR_PASS'
-                    )]) {
-                        sh """
-                            echo $HARBOR_PASS | docker login ${params.HARBOR_REGISTRY} \
-                                -u $HARBOR_USER --password-stdin
-                        """
-                    }
+                withCredentials([usernamePassword(
+                    credentialsId: 'harbor-creds',
+                    usernameVariable: 'HARBOR_USER',
+                    passwordVariable: 'HARBOR_PASS'
+                )]) {
+                    sh """
+                        echo $HARBOR_PASS | docker login ${params.HARBOR_REGISTRY} \
+                            -u $HARBOR_USER --password-stdin
+                    """
                 }
             }
         }
@@ -78,22 +77,19 @@ pipeline {
                 script {
                     getBuildServices().each { svc ->
 
-                        stage("Build ${svc}") {
+                        def dockerfilePath = resolveDockerfilePath(svc)
+                        def buildContext = (svc == 'cartservice')
+                            ? 'src/cartservice/src'
+                            : "src/${svc}"
 
-                            def dockerfilePath = resolveDockerfilePath(svc)
+                        echo "Building ${svc}"
 
-                            def buildContext = (svc == 'cartservice')
-                                ? 'src/cartservice/src'
-                                : "src/${svc}"
-
-                            sh """
-                                docker build \
-                                    -f ${dockerfilePath} \
-                                    -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} \
-                                    -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest \
-                                    ${buildContext}
-                            """
-                        }
+                        sh """
+                            docker build \
+                                -f ${dockerfilePath} \
+                                -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} \
+                                ${buildContext}
+                        """
                     }
                 }
             }
@@ -108,13 +104,52 @@ pipeline {
                 script {
                     getBuildServices().each { svc ->
 
-                        stage("Push ${svc}") {
+                        sh """
+                            docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Update GitOps Repo') {
+            when {
+                expression { params.PUSH_IMAGES }
+            }
+
+            steps {
+                withCredentials([sshUserPrivateKey(
+                    credentialsId: 'git-ssh-key',
+                    keyFileVariable: 'SSH_KEY'
+                )]) {
+
+                    sh """
+                        eval \$(ssh-agent -s)
+                        ssh-add $SSH_KEY
+
+                        rm -rf gitops
+                        git clone ${params.GITOPS_REPO} gitops
+                        cd gitops
+
+                        git config user.email "jenkins@local"
+                        git config user.name "jenkins"
+
+                        """
+
+                    script {
+                        getBuildServices().each { svc ->
+
                             sh """
-                                docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
-                                docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest
+                                yq e '.image.tag = "${imageTag}"' -i helm/${svc}/values.yaml
                             """
                         }
                     }
+
+                    sh """
+                        git add .
+                        git commit -m "update images ${imageTag}" || echo "No changes"
+                        git push
+                    """
                 }
             }
         }
@@ -129,7 +164,6 @@ pipeline {
                     getBuildServices().each { svc ->
                         sh """
                             docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} || true
-                            docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest || true
                         """
                     }
                 }
@@ -144,8 +178,6 @@ pipeline {
     }
 }
 
-
-// ===================== FUNCTIONS =====================
 
 def getServiceList() {
     return [
@@ -164,16 +196,14 @@ def getBuildServices() {
 
 def resolveDockerfilePath(String service) {
 
-    def serviceDir = "src/${service}"
-
     def path = sh(script: """
-        for c in \
-            "${serviceDir}/Dockerfile" \
-            "${serviceDir}/src/Dockerfile" \
-            "${serviceDir}/docker/Dockerfile"; do
-            [ -f "\$c" ] && echo "\$c" && exit 0
-        done
-        find "${serviceDir}" -name Dockerfile | head -1
+        if [ -f src/${service}/Dockerfile ]; then
+            echo src/${service}/Dockerfile
+        elif [ -f src/${service}/src/Dockerfile ]; then
+            echo src/${service}/src/Dockerfile
+        else
+            find src/${service} -name Dockerfile | head -1
+        fi
     """, returnStdout: true).trim()
 
     if (!path) {
