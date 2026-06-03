@@ -8,38 +8,29 @@ pipeline {
         BUILDKIT_PROGRESS = 'plain'
 
         HARBOR_PROJECT    = 'sample-microservice'
-        REGISTRY          = "${params.HARBOR_REGISTRY}"
-        SONAR_PROJECT_KEY = "microservices-demo"
 
-        GITOPS_REPO = "https://github.com/nt114thenttthytlu/gitops-for-microservices-demo.git"
+        DOTNET_ROOT = '/root/.dotnet'
+        PATH = "/root/.dotnet:/root/.dotnet/tools:${env.PATH}"
     }
 
     parameters {
-
         choice(
             name: 'BUILD_TARGET',
             choices: [
                 'all',
-                'adservice',
-                'cartservice',
-                'checkoutservice',
-                'currencyservice',
-                'emailservice',
-                'frontend',
-                'paymentservice',
-                'productcatalogservice',
-                'recommendationservice',
-                'shippingservice',
-                'shoppingassistantservice'
+                'adservice','cartservice','checkoutservice','currencyservice',
+                'emailservice','frontend','paymentservice',
+                'productcatalogservice','recommendationservice',
+                'shippingservice','shoppingassistantservice'
             ]
         )
 
-        booleanParam(name: 'RUN_SONAR', defaultValue: true)
-        booleanParam(name: 'RUN_GITOPS', defaultValue: true)
         booleanParam(name: 'PUSH_IMAGES', defaultValue: true)
-        booleanParam(name: 'CLEANUP_LOCAL', defaultValue: true)
+        booleanParam(name: 'RUN_SONAR', defaultValue: true)
+        booleanParam(name: 'UPDATE_GITOPS', defaultValue: true)
 
         string(name: 'HARBOR_REGISTRY', defaultValue: '3.0.195.225:80')
+        string(name: 'GITOPS_REPO', defaultValue: 'https://github.com/nt114thenttthytlu/gitops-repo.git')
     }
 
     stages {
@@ -54,65 +45,50 @@ pipeline {
             steps {
                 script {
                     def gitShort = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    imageTag = "${env.BUILD_NUMBER}-${gitShort}"
+                    imageTag = "${BUILD_NUMBER}-${gitShort}"
+                    echo "IMAGE TAG = ${imageTag}"
                 }
             }
         }
 
-        stage('.NET & SonarQube Analysis') {
-            when {
-                expression { params.RUN_SONAR }
-            }
+        stage('.NET + SonarQube') {
+            when { expression { params.RUN_SONAR } }
 
             steps {
-                script {
+                withSonarQubeEnv('sonarqube') {
+                    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
 
-                    sh '''
+                        sh '''#!/bin/bash
                         set -e
 
-                        apt-get update || true
-                        apt-get install -y wget ca-certificates libicu-dev
+                        cd src/cartservice
 
-                        wget -q https://dot.net/v1/dotnet-install.sh
-                        chmod +x dotnet-install.sh
-                        ./dotnet-install.sh --channel 8.0 --install-dir /root/.dotnet
+                        echo ">>> Install dotnet-sonarscanner"
+                        dotnet tool install --global dotnet-sonarscanner || true
 
-                        export DOTNET_ROOT=/root/.dotnet
-                        export PATH=$PATH:/root/.dotnet:/root/.dotnet/tools
-                    '''
+                        echo ">>> Restore"
+                        dotnet restore
 
-                    withSonarQubeEnv('sonarqube') {
-                        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
+                        echo ">>> Begin Sonar"
+                        dotnet sonarscanner begin \
+                          /k:microservices-demo-cartservice \
+                          /d:sonar.host.url=$SONAR_HOST_URL \
+                          /d:sonar.login=$SONAR_TOKEN \
+                          /d:sonar.exclusions="**/Dockerfile*"
 
-                            sh '''
-                                set -e
-                                cd src/cartservice
+                        echo ">>> Build"
+                        dotnet build
 
-                                dotnet tool install --global dotnet-sonarscanner || true
-                                export PATH=$PATH:/root/.dotnet/tools
-
-                                dotnet restore
-
-                                dotnet sonarscanner begin \
-                                    /k:$SONAR_PROJECT_KEY \
-                                    /d:sonar.host.url=$SONAR_HOST_URL \
-                                    /d:sonar.login=$SONAR_TOKEN \
-                                    /d:sonar.exclusions="**/Dockerfile*"
-
-                                dotnet build
-
-                                dotnet sonarscanner end /d:sonar.login=$SONAR_TOKEN
-                            '''
-                        }
+                        echo ">>> End Sonar"
+                        dotnet sonarscanner end /d:sonar.login=$SONAR_TOKEN
+                        '''
                     }
                 }
             }
         }
 
         stage('Quality Gate') {
-            when {
-                expression { params.RUN_SONAR }
-            }
+            when { expression { params.RUN_SONAR } }
 
             steps {
                 timeout(time: 5, unit: 'MINUTES') {
@@ -121,10 +97,8 @@ pipeline {
             }
         }
 
-        stage('Login to Harbor') {
-            when {
-                expression { params.PUSH_IMAGES }
-            }
+        stage('Login Harbor') {
+            when { expression { params.PUSH_IMAGES } }
 
             steps {
                 withCredentials([usernamePassword(
@@ -132,10 +106,10 @@ pipeline {
                     usernameVariable: 'HARBOR_USER',
                     passwordVariable: 'HARBOR_PASS'
                 )]) {
-                    sh '''
-                        set -e
-                        echo "$HARBOR_PASS" | docker login $REGISTRY \
-                            -u "$HARBOR_USER" --password-stdin
+                    sh '''#!/bin/bash
+                    set -e
+                    echo "$HARBOR_PASS" | docker login $HARBOR_REGISTRY \
+                        -u "$HARBOR_USER" --password-stdin
                     '''
                 }
             }
@@ -155,13 +129,11 @@ pipeline {
                                 : "src/${svc}"
 
                             sh """
-                                set -e
-
                                 docker build \
-                                    -f ${dockerfilePath} \
-                                    -t $REGISTRY/$HARBOR_PROJECT/${svc}:${imageTag} \
-                                    -t $REGISTRY/$HARBOR_PROJECT/${svc}:latest \
-                                    ${buildContext}
+                                  -f ${dockerfilePath} \
+                                  -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} \
+                                  -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest \
+                                  ${buildContext}
                             """
                         }
                     }
@@ -170,18 +142,15 @@ pipeline {
         }
 
         stage('Push Images') {
-            when {
-                expression { params.PUSH_IMAGES }
-            }
+            when { expression { params.PUSH_IMAGES } }
 
             steps {
                 script {
                     getBuildServices().each { svc ->
-
                         stage("Push ${svc}") {
                             sh """
-                                docker push $REGISTRY/$HARBOR_PROJECT/${svc}:${imageTag}
-                                docker push $REGISTRY/$HARBOR_PROJECT/${svc}:latest
+                                docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
+                                docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest
                             """
                         }
                     }
@@ -190,63 +159,42 @@ pipeline {
         }
 
         stage('Update GitOps Repo') {
-            when {
-                expression { params.RUN_GITOPS }
-            }
+            when { expression { params.UPDATE_GITOPS } }
 
             steps {
-                script {
-
-                    def gitopsDir = "gitops-repo"
-
-                    sh """
-                        rm -rf ${gitopsDir}
-                        git clone ${GITOPS_REPO} ${gitopsDir}
-                    """
-
-                    getBuildServices().each { svc ->
-
-                        sh """
-                            set -e
-
-                            FILE=${gitopsDir}/apps/${svc}/values.yaml
-
-                            if [ ! -f \$FILE ]; then
-                                echo "❌ GitOps file not found: \$FILE"
-                                exit 1
-                            fi
-
-                            # update image tag
-                            sed -i 's#tag:.*#tag: ${imageTag}#g' \$FILE
-                            sed -i 's#repository:.*#repository: ${REGISTRY}/${HARBOR_PROJECT}/${svc}#g' \$FILE
-                        """
-                    }
+                withCredentials([usernamePassword(
+                    credentialsId: 'github-token',
+                    usernameVariable: 'GIT_USER',
+                    passwordVariable: 'GIT_PASS'
+                )]) {
 
                     sh """
-                        cd ${gitopsDir}
+                        rm -rf gitops
+                        git clone https://${GIT_USER}:${GIT_PASS}@github.com/nt114thenttthytlu/gitops-repo.git gitops
 
-                        git config user.email "jenkins@ci.local"
+                        cd gitops
+
+                        # Ví dụ update image tag
+                        sed -i 's|image: .*cartservice.*|image: ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/cartservice:${imageTag}|' k8s/cartservice.yaml || true
+
+                        git config user.email "jenkins@local"
                         git config user.name "jenkins"
 
                         git add .
-                        git commit -m "update images ${imageTag}" || true
-                        git push origin main || true
+                        git commit -m "update image ${imageTag}" || true
+                        git push || true
                     """
                 }
             }
         }
 
         stage('Cleanup Local Images') {
-            when {
-                expression { params.CLEANUP_LOCAL }
-            }
-
             steps {
                 script {
                     getBuildServices().each { svc ->
                         sh """
-                            docker rmi $REGISTRY/$HARBOR_PROJECT/${svc}:${imageTag} || true
-                            docker rmi $REGISTRY/$HARBOR_PROJECT/${svc}:latest || true
+                            docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} || true
+                            docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest || true
                         """
                     }
                 }
@@ -256,15 +204,7 @@ pipeline {
 
     post {
         always {
-            sh "docker logout $REGISTRY || true"
-        }
-
-        success {
-            echo "SUCCESS: ImageTag: ${imageTag}"
-        }
-
-        failure {
-            echo "FAILED: Check logs"
+            sh "docker logout ${params.HARBOR_REGISTRY} || true"
         }
     }
 }
