@@ -11,8 +11,8 @@ pipeline {
         SONAR_PROJECT_KEY = 'microservices-demo'
         SONAR_HOST_URL    = 'http://3.0.195.225:9000'
 
-        DOTNET_ROOT = "$HOME/.dotnet"
-        PATH = "$PATH:$HOME/.dotnet:$HOME/.dotnet/tools"
+        DOTNET_ROOT = '/root/.dotnet'
+        PATH = "/root/.dotnet:/root/.dotnet/tools:${env.PATH}"
     }
 
     parameters {
@@ -38,27 +38,30 @@ pipeline {
 
         stage('Checkout') {
             steps {
+                cleanWs()
                 checkout scm
             }
         }
 
-        stage('Install .NET SDK') {
+        stage('Setup .NET SDK') {
             steps {
                 sh '''
+                    set -e
+
                     echo "Installing .NET SDK..."
 
                     apt-get update || true
                     apt-get install -y wget ca-certificates libicu-dev
 
-                    wget https://dot.net/v1/dotnet-install.sh
+                    wget -q https://dot.net/v1/dotnet-install.sh
                     chmod +x dotnet-install.sh
 
-                    ./dotnet-install.sh --channel 8.0 --install-dir $HOME/.dotnet
+                    ./dotnet-install.sh --channel 8.0 --install-dir /root/.dotnet
 
-                    export DOTNET_ROOT=$HOME/.dotnet
-                    export PATH=$PATH:$HOME/.dotnet:$HOME/.dotnet/tools
+                    export DOTNET_ROOT=/root/.dotnet
+                    export PATH=$PATH:/root/.dotnet:/root/.dotnet/tools
 
-                    dotnet --version
+                    dotnet --info
                 '''
             }
         }
@@ -79,18 +82,21 @@ pipeline {
                     withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
 
                         sh '''
+                            set -e
+
                             cd src/cartservice
 
                             dotnet tool install --global dotnet-sonarscanner || true
+                            export PATH=$PATH:/root/.dotnet/tools
 
-                            export PATH="$PATH:$HOME/.dotnet/tools"
+                            dotnet restore
 
                             dotnet sonarscanner begin \
                                 /k:"microservices-demo-cartservice" \
                                 /d:sonar.host.url="$SONAR_HOST_URL" \
                                 /d:sonar.login="$SONAR_TOKEN"
 
-                            dotnet build
+                            dotnet build --no-restore
 
                             dotnet sonarscanner end \
                                 /d:sonar.login="$SONAR_TOKEN"
@@ -109,9 +115,7 @@ pipeline {
         }
 
         stage('Login to Harbor') {
-            when {
-                expression { params.PUSH_IMAGES }
-            }
+            when { expression { params.PUSH_IMAGES } }
             steps {
                 withCredentials([usernamePassword(
                     credentialsId: 'harbor-creds',
@@ -148,9 +152,7 @@ pipeline {
         }
 
         stage('Push Images') {
-            when {
-                expression { params.PUSH_IMAGES }
-            }
+            when { expression { params.PUSH_IMAGES } }
             steps {
                 script {
                     getBuildServices().each { svc ->
@@ -163,9 +165,7 @@ pipeline {
         }
 
         stage('Update GitOps Repo') {
-            when {
-                expression { params.PUSH_IMAGES }
-            }
+            when { expression { params.PUSH_IMAGES } }
 
             steps {
                 withCredentials([sshUserPrivateKey(
@@ -196,7 +196,7 @@ pipeline {
                         git config user.name "jenkins"
 
                         git add .
-                        git commit -m "update images ${imageTag}" || echo "No changes"
+                        git commit -m "update images ${imageTag}" || true
                         git push
                     '''
                 }
@@ -204,10 +204,7 @@ pipeline {
         }
 
         stage('Cleanup Local Images') {
-            when {
-                expression { params.CLEANUP_LOCAL }
-            }
-
+            when { expression { params.CLEANUP_LOCAL } }
             steps {
                 script {
                     getBuildServices().each { svc ->
@@ -226,8 +223,6 @@ pipeline {
         }
     }
 }
-
-/* ================= helper ================= */
 
 def getServiceList() {
     return [
