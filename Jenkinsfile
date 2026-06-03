@@ -12,7 +12,6 @@ pipeline {
     }
 
     parameters {
-
         choice(
             name: 'BUILD_TARGET',
             choices: [
@@ -49,23 +48,29 @@ pipeline {
             }
         }
 
-
         stage('SonarQube Analysis') {
             steps {
                 withSonarQubeEnv('sonarqube') {
-                    sh """
-                        cd src/cartservice
 
-                        dotnet sonarscanner begin \
-                        /k:"${SONAR_PROJECT_KEY}-cartservice" \
-                        /d:sonar.host.url="${SONAR_HOST_URL}" \
-                        /d:sonar.login="${SONAR_TOKEN}"
+                    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
 
-                        dotnet build
+                        sh '''
+                            cd src/cartservice
 
-                        dotnet sonarscanner end \
-                        /d:sonar.login="${SONAR_TOKEN}"
-                    """
+                            dotnet tool install --global dotnet-sonarscanner
+                            export PATH="$PATH:$HOME/.dotnet/tools"
+
+                            dotnet sonarscanner begin \
+                                /k:"microservices-demo-cartservice" \
+                                /d:sonar.host.url="$SONAR_HOST_URL" \
+                                /d:sonar.login="$SONAR_TOKEN"
+
+                            dotnet build
+
+                            dotnet sonarscanner end \
+                                /d:sonar.login="$SONAR_TOKEN"
+                        '''
+                    }
                 }
             }
         }
@@ -77,7 +82,6 @@ pipeline {
                 }
             }
         }
-
 
         stage('Login to Harbor') {
             when {
@@ -98,7 +102,6 @@ pipeline {
                 }
             }
         }
-
 
         stage('Build Images') {
             steps {
@@ -121,12 +124,10 @@ pipeline {
             }
         }
 
-
         stage('Push Images') {
             when {
                 expression { params.PUSH_IMAGES }
             }
-
             steps {
                 script {
                     getBuildServices().each { svc ->
@@ -137,7 +138,6 @@ pipeline {
                 }
             }
         }
-
 
         stage('Update GitOps Repo') {
             when {
@@ -180,7 +180,6 @@ pipeline {
             }
         }
 
-
         stage('Cleanup Local Images') {
             when {
                 expression { params.CLEANUP_LOCAL }
@@ -204,7 +203,6 @@ pipeline {
         }
     }
 }
-
 
 def getServiceList() {
     return [
