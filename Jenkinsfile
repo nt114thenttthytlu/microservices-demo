@@ -51,16 +51,19 @@ pipeline {
 
 
         stage('SonarQube Analysis') {
-            steps {
-                withSonarQubeEnv('sonarqube') {
-                    sh """
-                        mvn clean verify sonar:sonar \
-                        -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                        -Dsonar.host.url=${SONAR_HOST_URL}
-                    """
-                }
+        steps {
+            withSonarQubeEnv('sonarqube') {
+                sh """
+                    cd src
+
+                    mvn clean verify sonar:sonar \
+                    -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                    -Dsonar.host.url=${SONAR_HOST_URL} \
+                    -Dsonar.sourceEncoding=UTF-8
+                """
             }
         }
+    }
 
         stage('Quality Gate') {
             steps {
