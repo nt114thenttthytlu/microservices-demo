@@ -236,6 +236,9 @@ pipeline {
 
                             git add .
 
+                            git remote -v
+                            git config --get remote.origin.url
+
                             git diff --cached --quiet || \
                             git commit -m "ci: update images to ${imageTag}"
 
