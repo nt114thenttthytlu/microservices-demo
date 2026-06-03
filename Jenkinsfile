@@ -1,19 +1,18 @@
 def imageTag = ''
 
 pipeline {
-    agent {
-        docker {
-            image 'mcr.microsoft.com/dotnet/sdk:8.0'
-            args '-u root -v /var/run/docker.sock:/var/run/docker.sock'
-        }
-    }
+    agent any
 
     environment {
         DOCKER_BUILDKIT   = '1'
         BUILDKIT_PROGRESS = 'plain'
+
         HARBOR_PROJECT    = 'sample-microservice'
         SONAR_PROJECT_KEY = 'microservices-demo'
         SONAR_HOST_URL    = 'http://3.0.195.225:9000'
+
+        DOTNET_ROOT = "$HOME/.dotnet"
+        PATH = "$PATH:$HOME/.dotnet:$HOME/.dotnet/tools"
     }
 
     parameters {
@@ -43,6 +42,24 @@ pipeline {
             }
         }
 
+        stage('Install .NET SDK') {
+            steps {
+                sh '''
+                    echo "Installing .NET SDK..."
+
+                    apt-get update || true
+                    apt-get install -y wget ca-certificates || true
+
+                    wget https://dot.net/v1/dotnet-install.sh
+                    chmod +x dotnet-install.sh
+
+                    ./dotnet-install.sh --channel 8.0 --install-dir $HOME/.dotnet
+
+                    dotnet --version
+                '''
+            }
+        }
+
         stage('Prepare Image Tag') {
             steps {
                 script {
@@ -61,7 +78,8 @@ pipeline {
                         sh '''
                             cd src/cartservice
 
-                            dotnet tool install --global dotnet-sonarscanner
+                            dotnet tool install --global dotnet-sonarscanner || true
+
                             export PATH="$PATH:$HOME/.dotnet/tools"
 
                             dotnet sonarscanner begin \
@@ -92,17 +110,15 @@ pipeline {
                 expression { params.PUSH_IMAGES }
             }
             steps {
-                script {
-                    withCredentials([usernamePassword(
-                        credentialsId: 'harbor-creds',
-                        usernameVariable: 'HARBOR_USER',
-                        passwordVariable: 'HARBOR_PASS'
-                    )]) {
-                        sh '''
-                            echo "$HARBOR_PASS" | docker login 3.0.195.225:80 \
-                            -u "$HARBOR_USER" --password-stdin
-                        '''
-                    }
+                withCredentials([usernamePassword(
+                    credentialsId: 'harbor-creds',
+                    usernameVariable: 'HARBOR_USER',
+                    passwordVariable: 'HARBOR_PASS'
+                )]) {
+                    sh '''
+                        echo "$HARBOR_PASS" | docker login 3.0.195.225:80 \
+                        -u "$HARBOR_USER" --password-stdin
+                    '''
                 }
             }
         }
@@ -207,6 +223,8 @@ pipeline {
         }
     }
 }
+
+/* ================= helper ================= */
 
 def getServiceList() {
     return [
