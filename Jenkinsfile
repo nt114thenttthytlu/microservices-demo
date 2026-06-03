@@ -4,20 +4,18 @@ pipeline {
     agent any
 
     environment {
-
         DOCKER_BUILDKIT   = '1'
         BUILDKIT_PROGRESS = 'plain'
 
         HARBOR_PROJECT    = 'sample-microservice'
         SONAR_PROJECT_KEY = 'microservices-demo'
-        SONAR_HOST_URL    = 'http://3.0.195.225:9000'
+        SONAR_HOST_URL    = 'http://52.76.101.147:9000'
 
         DOTNET_ROOT = '/root/.dotnet'
         PATH = "/root/.dotnet:/root/.dotnet/tools:${env.PATH}"
     }
 
     parameters {
-
         choice(
             name: 'BUILD_TARGET',
             choices: [
@@ -50,8 +48,6 @@ pipeline {
                 sh '''
                     set -e
 
-                    echo "Installing .NET SDK..."
-
                     apt-get update || true
                     apt-get install -y wget ca-certificates libicu-dev
 
@@ -61,9 +57,9 @@ pipeline {
                     ./dotnet-install.sh --channel 8.0 --install-dir /root/.dotnet
 
                     export DOTNET_ROOT=/root/.dotnet
-                    export PATH=$PATH:/root/.dotnet:/root/.dotnet/tools
+                    export PATH=/root/.dotnet:/root/.dotnet/tools:$PATH
 
-                    dotnet --version
+                    dotnet --info
                 '''
             }
         }
@@ -125,38 +121,47 @@ pipeline {
                     passwordVariable: 'HARBOR_PASS'
                 )]) {
                     sh '''
-                        echo "$HARBOR_PASS" | docker login 3.0.195.225:80 \
+                        echo "$HARBOR_PASS" | docker login ${params.HARBOR_REGISTRY} \
                         -u "$HARBOR_USER" --password-stdin
                     '''
                 }
             }
         }
 
-        stage('Build Images') {
+        stage('Build Images (SEQUENTIAL)') {
             steps {
                 script {
-                    getBuildServices().each { svc ->
+                    def services = getBuildServices()
 
-                        def dockerfilePath = resolveDockerfilePath(svc)
-                        def buildContext = "src/${svc}"
+                    for (svc in services) {
+
+                        echo "Building: ${svc}"
+
+                        def dockerfile = resolveDockerfilePath(svc)
+
+                        // 🔥 FIX CARTSERVICE CONTEXT
+                        def context = (svc == 'cartservice')
+                            ? 'src/cartservice'
+                            : "src/${svc}"
 
                         sh """
                             docker build \
-                                -f ${dockerfilePath} \
+                                -f ${dockerfile} \
                                 -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} \
-                                ${buildContext}
+                                ${context}
                         """
                     }
                 }
             }
         }
 
-        stage('Push Images') {
+        stage('Push Images (SEQUENTIAL)') {
             when { expression { params.PUSH_IMAGES } }
-
             steps {
                 script {
-                    getBuildServices().each { svc ->
+                    def services = getBuildServices()
+
+                    for (svc in services) {
                         sh """
                             docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
                         """
@@ -167,49 +172,41 @@ pipeline {
 
         stage('Update GitOps Repo') {
             when { expression { params.PUSH_IMAGES } }
-
             steps {
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: 'git-ssh-key',
-                    keyFileVariable: 'SSH_KEY'
-                )]) {
+                sh '''
+                    rm -rf gitops
+                    git clone ${GITOPS_REPO} gitops
+                '''
 
-                    sh '''
-                        eval $(ssh-agent -s)
-                        ssh-add $SSH_KEY
+                script {
+                    def services = getBuildServices()
 
-                        rm -rf gitops
-                        git clone ${params.GITOPS_REPO} gitops
-                    '''
-
-                    script {
-                        getBuildServices().each { svc ->
-                            sh """
-                                cd gitops
-                                yq e '.image.tag = "${imageTag}"' -i helm/${svc}/values.yaml
-                            """
-                        }
+                    for (svc in services) {
+                        sh """
+                            yq e '.image.tag = "${imageTag}"' -i gitops/helm/${svc}/values.yaml
+                        """
                     }
-
-                    sh '''
-                        cd gitops
-                        git config user.email "jenkins@local"
-                        git config user.name "jenkins"
-
-                        git add .
-                        git commit -m "update images ${imageTag}" || true
-                        git push
-                    '''
                 }
+
+                sh '''
+                    cd gitops
+                    git config user.email "jenkins@local"
+                    git config user.name "jenkins"
+
+                    git add .
+                    git commit -m "update ${imageTag}" || true
+                    git push
+                '''
             }
         }
 
         stage('Cleanup Local Images') {
             when { expression { params.CLEANUP_LOCAL } }
-
             steps {
                 script {
-                    getBuildServices().each { svc ->
+                    def services = getBuildServices()
+
+                    for (svc in services) {
                         sh """
                             docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} || true
                         """
@@ -221,11 +218,12 @@ pipeline {
 
     post {
         always {
-            sh "docker logout 3.0.195.225:80 || true"
+            sh "docker logout ${params.HARBOR_REGISTRY} || true"
         }
     }
 }
 
+/* ================= helpers ================= */
 
 def getServiceList() {
     return [
