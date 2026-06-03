@@ -233,8 +233,6 @@ pipeline {
 
                         sh """
                             cd gitops
-                            
-                            git checkout -b ${gitBranch}
 
                             git add .
 
