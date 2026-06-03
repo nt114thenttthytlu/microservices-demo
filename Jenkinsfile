@@ -29,7 +29,7 @@ pipeline {
         booleanParam(name: 'RUN_SONAR', defaultValue: true)
         booleanParam(name: 'UPDATE_GITOPS', defaultValue: true)
 
-        string(name: 'HARBOR_REGISTRY', defaultValue: '3.0.195.225:80')
+        string(name: 'HARBOR_REGISTRY', defaultValue: 'harbor.thenttthytlu.io.vn')
         string(name: 'GITOPS_REPO', defaultValue: 'https://github.com/nt114thenttthytlu/gitops-repo.git')
     }
 
