@@ -142,22 +142,41 @@ pipeline {
         }
 
         stage('Push Images') {
-            when { expression { params.PUSH_IMAGES } }
+            when {
+                expression { params.PUSH_IMAGES }
+            }
 
             steps {
-                script {
-                    getBuildServices().each { svc ->
-                        stage("Push ${svc}") {
-                            sh """
-                                docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
-                                docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest
-                            """
+
+                withCredentials([usernamePassword(
+                    credentialsId: 'harbor-creds',
+                    usernameVariable: 'HARBOR_USER',
+                    passwordVariable: 'HARBOR_PASS'
+                )]) {
+
+                    sh """
+                        echo \$HARBOR_PASS | docker login ${params.HARBOR_REGISTRY} \
+                            -u \$HARBOR_USER \
+                            --password-stdin
+                    """
+
+                    script {
+
+                        getBuildServices().each { svc ->
+
+                            stage("Push ${svc}") {
+
+                                sh """
+                                    docker push ${params.HARBOR_REGISTRY}/${env.HARBOR_PROJECT}/${svc}:${imageTag}
+                                    docker push ${params.HARBOR_REGISTRY}/${env.HARBOR_PROJECT}/${svc}:latest
+                                """
+                            }
                         }
                     }
                 }
             }
         }
-
+        
         stage('Update GitOps Repo') {
             when {
                 expression { params.UPDATE_GITOPS }
