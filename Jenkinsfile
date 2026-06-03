@@ -51,19 +51,24 @@ pipeline {
 
 
         stage('SonarQube Analysis') {
-        steps {
-            withSonarQubeEnv('sonarqube') {
-                sh """
-                    cd src
+            steps {
+                withSonarQubeEnv('sonarqube') {
+                    sh """
+                        cd src/cartservice
 
-                    mvn clean verify sonar:sonar \
-                    -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
-                    -Dsonar.host.url=${SONAR_HOST_URL} \
-                    -Dsonar.sourceEncoding=UTF-8
-                """
+                        dotnet sonarscanner begin \
+                        /k:"${SONAR_PROJECT_KEY}-cartservice" \
+                        /d:sonar.host.url="${SONAR_HOST_URL}" \
+                        /d:sonar.login="${SONAR_TOKEN}"
+
+                        dotnet build
+
+                        dotnet sonarscanner end \
+                        /d:sonar.login="${SONAR_TOKEN}"
+                    """
+                }
             }
         }
-    }
 
         stage('Quality Gate') {
             steps {
