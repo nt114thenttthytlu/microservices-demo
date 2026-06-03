@@ -159,31 +159,67 @@ pipeline {
         }
 
         stage('Update GitOps Repo') {
-            when { expression { params.UPDATE_GITOPS } }
+            when {
+                expression { params.UPDATE_GITOPS }
+            }
 
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'github-token',
-                    usernameVariable: 'GIT_USER',
-                    passwordVariable: 'GIT_PASS'
-                )]) {
 
-                    sh """
-                        rm -rf gitops
-                        git clone https://${GIT_USER}:${GIT_PASS}@github.com/nt114thenttthytlu/gitops-repo.git gitops
+                withCredentials([
+                    string(
+                        credentialsId: 'github-token',
+                        variable: 'GITHUB_TOKEN'
+                    )
+                ]) {
 
-                        cd gitops
+                    script {
 
-                        # Ví dụ update image tag
-                        sed -i 's|image: .*cartservice.*|image: ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/cartservice:${imageTag}|' k8s/cartservice.yaml || true
+                        sh """
+                            rm -rf gitops
 
-                        git config user.email "jenkins@local"
-                        git config user.name "jenkins"
+                            git clone \
+                            https://${GITHUB_TOKEN}@github.com/nt114thenttthytlu/gitops-for-microservices-demo.git \
+                            gitops
 
-                        git add .
-                        git commit -m "update image ${imageTag}" || true
-                        git push || true
-                    """
+                            cd gitops
+
+                            git config user.email "jenkins@local"
+                            git config user.name "jenkins"
+                        """
+
+                        getBuildServices().each { svc ->
+
+                            sh """
+                                cd gitops
+
+                                VALUES_FILE="${svc}/values.yaml"
+
+                                if [ -f "\$VALUES_FILE" ]; then
+
+                                    echo "Updating \$VALUES_FILE"
+
+                                    sed -i "s|repository:.*|repository: ${params.HARBOR_REGISTRY}/${env.HARBOR_PROJECT}/${svc}|g" \$VALUES_FILE
+
+                                    sed -i "s|tag:.*|tag: ${imageTag}|g" \$VALUES_FILE
+
+                                    cat \$VALUES_FILE | grep -A2 image:
+                                else
+                                    echo "Skip ${svc} - values.yaml not found"
+                                fi
+                            """
+                        }
+
+                        sh """
+                            cd gitops
+
+                            git add .
+
+                            git diff --cached --quiet || \
+                            git commit -m "ci: update images to ${imageTag}"
+
+                            git push origin main
+                        """
+                    }
                 }
             }
         }
