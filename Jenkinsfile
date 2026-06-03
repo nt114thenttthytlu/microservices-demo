@@ -5,17 +5,35 @@ pipeline {
     agent any
 
     environment {
-        HARBOR_PROJECT  = 'sample-microservice'
-        HARBOR_REGISTRY = '3.0.195.225:80'
-        SONAR_HOST_URL  = 'http://52.76.101.147:9000'
-
-        DOTNET_ROOT = '/root/.dotnet'
-        PATH = "/root/.dotnet:/root/.dotnet/tools:${env.PATH}"
+        DOCKER_BUILDKIT   = '1'
+        BUILDKIT_PROGRESS = 'plain'
+        HARBOR_PROJECT    = 'sample-microservice'
     }
 
     parameters {
-        choice(name: 'BUILD_TARGET', choices: ['all', 'cartservice', 'frontend'])
+
+        choice(
+            name: 'BUILD_TARGET',
+            choices: [
+                'all',
+                'adservice',
+                'cartservice',
+                'checkoutservice',
+                'currencyservice',
+                'emailservice',
+                'frontend',
+                'paymentservice',
+                'productcatalogservice',
+                'recommendationservice',
+                'shippingservice',
+                'shoppingassistantservice'
+            ]
+        )
+
         booleanParam(name: 'PUSH_IMAGES', defaultValue: true)
+        booleanParam(name: 'CLEANUP_LOCAL', defaultValue: true)
+
+        string(name: 'HARBOR_REGISTRY', defaultValue: '3.0.195.225:80')
     }
 
     stages {
@@ -30,47 +48,48 @@ pipeline {
         stage('Detect Services') {
             steps {
                 script {
-                    services = sh(
-                        script: "find src -maxdepth 1 -type d -name '*service*' -exec basename {} \\;",
-                        returnStdout: true
-                    ).trim().split("\n")
-
-                    echo "Detected services: ${services}"
+                    services = getServiceList()
+                    echo "All services: ${services}"
                 }
             }
         }
 
-        stage('Prepare Tag') {
+        stage('Prepare Image Tag') {
             steps {
                 script {
                     def gitShort = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     imageTag = "${env.BUILD_NUMBER}-${gitShort}"
-                    echo "ImageTag: ${imageTag}"
+                    echo "ImageTag = ${imageTag}"
                 }
             }
         }
 
         stage('SonarQube Analysis') {
             steps {
-                withSonarQubeEnv('sonarqube') {
-                    withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
-                        sh '''
-                            dotnet tool install --global dotnet-sonarscanner || true
-                            export PATH=$PATH:/root/.dotnet/tools
+                script {
+                    def svc = (params.BUILD_TARGET == 'all') ? 'cartservice' : params.BUILD_TARGET
 
-                            cd src/cartservice
-                            dotnet restore
+                    withSonarQubeEnv('sonarqube') {
+                        withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
 
-                            dotnet sonarscanner begin \
-                                /k:"microservices-demo-cartservice" \
-                                /d:sonar.host.url="$SONAR_HOST_URL" \
-                                /d:sonar.login="$SONAR_TOKEN"
+                            sh """
+                                dotnet tool install --global dotnet-sonarscanner || true
+                                export PATH=\$PATH:/root/.dotnet/tools
 
-                            dotnet build
+                                cd src/${svc}
+                                dotnet restore
 
-                            dotnet sonarscanner end \
-                                /d:sonar.login="$SONAR_TOKEN"
-                        '''
+                                dotnet sonarscanner begin \
+                                    /k:"microservices-demo-${svc}" \
+                                    /d:sonar.host.url="$SONAR_HOST_URL" \
+                                    /d:sonar.login="$SONAR_TOKEN"
+
+                                dotnet build
+
+                                dotnet sonarscanner end \
+                                    /d:sonar.login="$SONAR_TOKEN"
+                            """
+                        }
                     }
                 }
             }
@@ -84,7 +103,7 @@ pipeline {
             }
         }
 
-        stage('Build Images') {
+        stage('Build Images (SEQUENTIAL)') {
             steps {
                 script {
 
@@ -94,49 +113,43 @@ pipeline {
 
                     for (svc in buildList) {
 
-                        echo "Building service: ${svc}"
+                        echo "Building: ${svc}"
 
-                        def dockerfile = "src/${svc}/Dockerfile"
+                        def dockerfile = resolveDockerfilePath(svc)
                         def context = "src/${svc}"
 
                         sh """
                             docker build \
-                            -f ${dockerfile} \
-                            -t ${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} \
-                            ${context}
+                                -f ${dockerfile} \
+                                -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} \
+                                -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest \
+                                ${context}
                         """
                     }
                 }
             }
         }
 
-        stage('Push Images') {
+        stage('Login Harbor') {
             when { expression { params.PUSH_IMAGES } }
             steps {
-                script {
-
-                    def buildList = (params.BUILD_TARGET == 'all')
-                        ? services
-                        : [params.BUILD_TARGET]
-
-                    for (svc in buildList) {
-                        sh """
-                            docker push ${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
-                        """
-                    }
+                withCredentials([usernamePassword(
+                    credentialsId: 'harbor-creds',
+                    usernameVariable: 'HARBOR_USER',
+                    passwordVariable: 'HARBOR_PASS'
+                )]) {
+                    sh """
+                        echo $HARBOR_PASS | docker login ${params.HARBOR_REGISTRY} \
+                        -u $HARBOR_USER --password-stdin
+                    """
                 }
             }
         }
 
-        stage('Update GitOps') {
+        stage('Push Images (SEQUENTIAL)') {
             when { expression { params.PUSH_IMAGES } }
+
             steps {
-
-                sh '''
-                    rm -rf gitops
-                    git clone ${GITOPS_REPO} gitops
-                '''
-
                 script {
 
                     def buildList = (params.BUILD_TARGET == 'all')
@@ -144,25 +157,21 @@ pipeline {
                         : [params.BUILD_TARGET]
 
                     for (svc in buildList) {
+
+                        echo "Pushing: ${svc}"
+
                         sh """
-                            yq e '.image.tag = "${imageTag}"' -i gitops/helm/${svc}/values.yaml
+                            docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
+                            docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest
                         """
                     }
                 }
-
-                sh '''
-                    cd gitops
-                    git config user.email "jenkins@local"
-                    git config user.name "jenkins"
-
-                    git add .
-                    git commit -m "update ${imageTag}" || true
-                    git push
-                '''
             }
         }
 
-        stage('Cleanup') {
+        stage('Cleanup Local Images') {
+            when { expression { params.CLEANUP_LOCAL } }
+
             steps {
                 script {
 
@@ -171,8 +180,10 @@ pipeline {
                         : [params.BUILD_TARGET]
 
                     for (svc in buildList) {
+
                         sh """
-                            docker rmi ${HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} || true
+                            docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} || true
+                            docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest || true
                         """
                     }
                 }
@@ -182,7 +193,39 @@ pipeline {
 
     post {
         always {
-            sh "docker logout ${HARBOR_REGISTRY} || true"
+            sh "docker logout ${params.HARBOR_REGISTRY} || true"
         }
     }
+}
+
+
+
+def getServiceList() {
+    return [
+        'adservice','cartservice','checkoutservice','currencyservice',
+        'emailservice','frontend','paymentservice',
+        'productcatalogservice','recommendationservice',
+        'shippingservice','shoppingassistantservice'
+    ]
+}
+
+def resolveDockerfilePath(String service) {
+
+    def serviceDir = "src/${service}"
+
+    def path = sh(script: """
+        for c in \
+            "${serviceDir}/Dockerfile" \
+            "${serviceDir}/src/Dockerfile" \
+            "${serviceDir}/docker/Dockerfile"; do
+            [ -f "\$c" ] && echo "\$c" && exit 0
+        done
+        find "${serviceDir}" -name Dockerfile | head -1
+    """, returnStdout: true).trim()
+
+    if (!path) {
+        error "No Dockerfile found for ${service}"
+    }
+
+    return path
 }
