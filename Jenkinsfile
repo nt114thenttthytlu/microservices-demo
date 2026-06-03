@@ -178,6 +178,7 @@ pipeline {
         }
         
         stage('Update GitOps Repo') {
+
             when {
                 expression { params.UPDATE_GITOPS }
             }
@@ -185,9 +186,10 @@ pipeline {
             steps {
 
                 withCredentials([
-                    string(
+                    usernamePassword(
                         credentialsId: 'github-token',
-                        variable: 'GITHUB_TOKEN'
+                        usernameVariable: 'GITHUB_USER',
+                        passwordVariable: 'GITHUB_TOKEN'
                     )
                 ]) {
 
@@ -197,7 +199,7 @@ pipeline {
                             rm -rf gitops
 
                             git clone \
-                            https://${GITHUB_TOKEN}@github.com/nt114thenttthytlu/gitops-for-microservices-demo.git \
+                            https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/nt114thenttthytlu/gitops-for-microservices-demo.git \
                             gitops
 
                             cd gitops
@@ -221,7 +223,8 @@ pipeline {
 
                                     sed -i "s|tag:.*|tag: ${imageTag}|g" \$VALUES_FILE
 
-                                    cat \$VALUES_FILE | grep -A2 image:
+                                    grep -A2 image: \$VALUES_FILE || true
+
                                 else
                                     echo "Skip ${svc} - values.yaml not found"
                                 fi
