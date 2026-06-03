@@ -4,34 +4,15 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_BUILDKIT   = '1'
-        BUILDKIT_PROGRESS = 'plain'
-
-        HARBOR_PROJECT    = 'sample-microservice'
-        SONAR_PROJECT_KEY = 'microservices-demo'
-        SONAR_HOST_URL    = 'http://3.0.195.225:9000'
-
+        HARBOR_PROJECT = 'sample-microservice'
+        SONAR_HOST_URL = 'http://3.0.195.225:9000'
         DOTNET_ROOT = '/root/.dotnet'
         PATH = "/root/.dotnet:/root/.dotnet/tools:${env.PATH}"
     }
 
     parameters {
-        choice(
-            name: 'BUILD_TARGET',
-            choices: [
-                'all',
-                'adservice','cartservice','checkoutservice','currencyservice',
-                'emailservice','frontend','paymentservice',
-                'productcatalogservice','recommendationservice',
-                'shippingservice','shoppingassistantservice'
-            ]
-        )
-
+        choice(name: 'BUILD_TARGET', choices: ['all','cartservice','frontend'])
         booleanParam(name: 'PUSH_IMAGES', defaultValue: true)
-        booleanParam(name: 'CLEANUP_LOCAL', defaultValue: true)
-
-        string(name: 'HARBOR_REGISTRY', defaultValue: '3.0.195.225:80')
-        string(name: 'GITOPS_REPO', defaultValue: 'git@github.com:your-org/gitops-microservices-demo.git')
     }
 
     stages {
@@ -43,35 +24,12 @@ pipeline {
             }
         }
 
-        stage('Setup .NET SDK') {
-            steps {
-                sh '''
-                    set -e
-
-                    echo "Installing .NET SDK..."
-
-                    apt-get update || true
-                    apt-get install -y wget ca-certificates libicu-dev
-
-                    wget -q https://dot.net/v1/dotnet-install.sh
-                    chmod +x dotnet-install.sh
-
-                    ./dotnet-install.sh --channel 8.0 --install-dir /root/.dotnet
-
-                    export DOTNET_ROOT=/root/.dotnet
-                    export PATH=$PATH:/root/.dotnet:/root/.dotnet/tools
-
-                    dotnet --info
-                '''
-            }
-        }
-
-        stage('Prepare Image Tag') {
+        stage('Prepare Tag') {
             steps {
                 script {
                     def gitShort = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     imageTag = "${env.BUILD_NUMBER}-${gitShort}"
-                    echo "Image tag: ${imageTag}"
+                    echo "ImageTag: ${imageTag}"
                 }
             }
         }
@@ -82,21 +40,19 @@ pipeline {
                     withCredentials([string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')]) {
 
                         sh '''
-                            set -e
-
-                            cd src/cartservice
-
                             dotnet tool install --global dotnet-sonarscanner || true
                             export PATH=$PATH:/root/.dotnet/tools
 
-                            dotnet restore
+                            cd src/cartservice
 
+                            dotnet restore
+                            
                             dotnet sonarscanner begin \
                                 /k:"microservices-demo-cartservice" \
                                 /d:sonar.host.url="$SONAR_HOST_URL" \
                                 /d:sonar.login="$SONAR_TOKEN"
 
-                            dotnet build --no-restore
+                            dotnet build
 
                             dotnet sonarscanner end \
                                 /d:sonar.login="$SONAR_TOKEN"
@@ -108,24 +64,8 @@ pipeline {
 
         stage('Quality Gate') {
             steps {
-                timeout(time: 2, unit: 'MINUTES') {
+                timeout(time: 5, unit: 'MINUTES') {
                     waitForQualityGate abortPipeline: true
-                }
-            }
-        }
-
-        stage('Login to Harbor') {
-            when { expression { params.PUSH_IMAGES } }
-            steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'harbor-creds',
-                    usernameVariable: 'HARBOR_USER',
-                    passwordVariable: 'HARBOR_PASS'
-                )]) {
-                    sh '''
-                        echo "$HARBOR_PASS" | docker login 3.0.195.225:80 \
-                        -u "$HARBOR_USER" --password-stdin
-                    '''
                 }
             }
         }
@@ -135,16 +75,14 @@ pipeline {
                 script {
                     getBuildServices().each { svc ->
 
-                        def dockerfilePath = resolveDockerfilePath(svc)
-                        def buildContext = (svc == 'cartservice')
-                            ? 'src/cartservice/src'
-                            : "src/${svc}"
+                        def dockerfile = resolveDockerfilePath(svc)
+                        def context = "src/${svc}"
 
                         sh """
                             docker build \
-                                -f ${dockerfilePath} \
-                                -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} \
-                                ${buildContext}
+                            -f ${dockerfile} \
+                            -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} \
+                            ${context}
                         """
                     }
                 }
@@ -164,47 +102,36 @@ pipeline {
             }
         }
 
-        stage('Update GitOps Repo') {
+        stage('Update GitOps') {
             when { expression { params.PUSH_IMAGES } }
-
             steps {
-                withCredentials([sshUserPrivateKey(
-                    credentialsId: 'git-ssh-key',
-                    keyFileVariable: 'SSH_KEY'
-                )]) {
 
-                    sh '''
-                        eval $(ssh-agent -s)
-                        ssh-add $SSH_KEY
+                sh '''
+                    rm -rf gitops
+                    git clone ${GITOPS_REPO} gitops
+                '''
 
-                        rm -rf gitops
-                        git clone ${params.GITOPS_REPO} gitops
-                    '''
-
-                    script {
-                        getBuildServices().each { svc ->
-                            sh """
-                                cd gitops
-                                yq e '.image.tag = "${imageTag}"' -i helm/${svc}/values.yaml
-                            """
-                        }
+                script {
+                    getBuildServices().each { svc ->
+                        sh """
+                            yq e '.image.tag = "${imageTag}"' -i gitops/helm/${svc}/values.yaml
+                        """
                     }
-
-                    sh '''
-                        cd gitops
-                        git config user.email "jenkins@local"
-                        git config user.name "jenkins"
-
-                        git add .
-                        git commit -m "update images ${imageTag}" || true
-                        git push
-                    '''
                 }
+
+                sh '''
+                    cd gitops
+                    git config user.email "jenkins@local"
+                    git config user.name "jenkins"
+
+                    git add .
+                    git commit -m "update ${imageTag}" || true
+                    git push
+                '''
             }
         }
 
-        stage('Cleanup Local Images') {
-            when { expression { params.CLEANUP_LOCAL } }
+        stage('Cleanup') {
             steps {
                 script {
                     getBuildServices().each { svc ->
@@ -219,41 +146,7 @@ pipeline {
 
     post {
         always {
-            sh "docker logout 3.0.195.225:80 || true"
+            sh "docker logout ${params.HARBOR_REGISTRY} || true"
         }
     }
-}
-
-def getServiceList() {
-    return [
-        'adservice','cartservice','checkoutservice','currencyservice',
-        'emailservice','frontend','paymentservice',
-        'productcatalogservice','recommendationservice',
-        'shippingservice','shoppingassistantservice'
-    ]
-}
-
-def getBuildServices() {
-    return (params.BUILD_TARGET == 'all')
-        ? getServiceList()
-        : [params.BUILD_TARGET]
-}
-
-def resolveDockerfilePath(String service) {
-
-    def path = sh(script: """
-        if [ -f src/${service}/Dockerfile ]; then
-            echo src/${service}/Dockerfile
-        elif [ -f src/${service}/src/Dockerfile ]; then
-            echo src/${service}/src/Dockerfile
-        else
-            find src/${service} -name Dockerfile | head -1
-        fi
-    """, returnStdout: true).trim()
-
-    if (!path) {
-        error "No Dockerfile found for ${service}"
-    }
-
-    return path
 }
