@@ -30,7 +30,7 @@ pipeline {
         booleanParam(name: 'UPDATE_GITOPS', defaultValue: true)
 
         string(name: 'HARBOR_REGISTRY', defaultValue: 'harbor.thenttthytlu.io.vn')
-        string(name: 'GITOPS_REPO', defaultValue: 'https://github.com/nt114thenttthytlu/gitops-repo.git')
+        string(name: 'GITOPS_REPO', defaultValue: 'https://github.com/nt114thenttthytlu/gitops-for-microservices-demo.git')
     }
 
     stages {
@@ -233,6 +233,8 @@ pipeline {
 
                         sh """
                             cd gitops
+                            
+                            git checkout -b ${gitBranch}
 
                             git add .
 
