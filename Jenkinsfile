@@ -7,6 +7,8 @@ pipeline {
         DOCKER_BUILDKIT   = '1'
         BUILDKIT_PROGRESS = 'plain'
         HARBOR_PROJECT    = 'sample-microservice'
+        SONAR_PROJECT_KEY = 'microservices-demo'
+        SONAR_HOST_URL    = 'http://3.0.195.225:9000'
     }
 
     parameters {
@@ -15,17 +17,10 @@ pipeline {
             name: 'BUILD_TARGET',
             choices: [
                 'all',
-                'adservice',
-                'cartservice',
-                'checkoutservice',
-                'currencyservice',
-                'emailservice',
-                'frontend',
-                'paymentservice',
-                'productcatalogservice',
-                'recommendationservice',
-                'shippingservice',
-                'shoppingassistantservice'
+                'adservice','cartservice','checkoutservice','currencyservice',
+                'emailservice','frontend','paymentservice',
+                'productcatalogservice','recommendationservice',
+                'shippingservice','shoppingassistantservice'
             ]
         )
 
@@ -54,23 +49,48 @@ pipeline {
             }
         }
 
+
+        stage('SonarQube Analysis') {
+            steps {
+                withSonarQubeEnv('sonarqube') {
+                    sh """
+                        mvn clean verify sonar:sonar \
+                        -Dsonar.projectKey=${SONAR_PROJECT_KEY} \
+                        -Dsonar.host.url=${SONAR_HOST_URL}
+                    """
+                }
+            }
+        }
+
+        stage('Quality Gate') {
+            steps {
+                timeout(time: 2, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
+                }
+            }
+        }
+
+
         stage('Login to Harbor') {
             when {
                 expression { params.PUSH_IMAGES }
             }
             steps {
-                withCredentials([usernamePassword(
-                    credentialsId: 'harbor-creds',
-                    usernameVariable: 'HARBOR_USER',
-                    passwordVariable: 'HARBOR_PASS'
-                )]) {
-                    sh """
-                        echo $HARBOR_PASS | docker login ${params.HARBOR_REGISTRY} \
-                            -u $HARBOR_USER --password-stdin
-                    """
+                script {
+                    withCredentials([usernamePassword(
+                        credentialsId: 'harbor-creds',
+                        usernameVariable: 'HARBOR_USER',
+                        passwordVariable: 'HARBOR_PASS'
+                    )]) {
+                        sh '''
+                            echo "$HARBOR_PASS" | docker login 3.0.195.225:80 \
+                            -u "$HARBOR_USER" --password-stdin
+                        '''
+                    }
                 }
             }
         }
+
 
         stage('Build Images') {
             steps {
@@ -81,8 +101,6 @@ pipeline {
                         def buildContext = (svc == 'cartservice')
                             ? 'src/cartservice/src'
                             : "src/${svc}"
-
-                        echo "Building ${svc}"
 
                         sh """
                             docker build \
@@ -95,6 +113,7 @@ pipeline {
             }
         }
 
+
         stage('Push Images') {
             when {
                 expression { params.PUSH_IMAGES }
@@ -103,7 +122,6 @@ pipeline {
             steps {
                 script {
                     getBuildServices().each { svc ->
-
                         sh """
                             docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
                         """
@@ -111,6 +129,7 @@ pipeline {
                 }
             }
         }
+
 
         stage('Update GitOps Repo') {
             when {
@@ -123,36 +142,36 @@ pipeline {
                     keyFileVariable: 'SSH_KEY'
                 )]) {
 
-                    sh """
-                        eval \$(ssh-agent -s)
+                    sh '''
+                        eval $(ssh-agent -s)
                         ssh-add $SSH_KEY
 
                         rm -rf gitops
                         git clone ${params.GITOPS_REPO} gitops
-                        cd gitops
-
-                        git config user.email "jenkins@local"
-                        git config user.name "jenkins"
-
-                        """
+                    '''
 
                     script {
                         getBuildServices().each { svc ->
-
                             sh """
+                                cd gitops
                                 yq e '.image.tag = "${imageTag}"' -i helm/${svc}/values.yaml
                             """
                         }
                     }
 
-                    sh """
+                    sh '''
+                        cd gitops
+                        git config user.email "jenkins@local"
+                        git config user.name "jenkins"
+
                         git add .
                         git commit -m "update images ${imageTag}" || echo "No changes"
                         git push
-                    """
+                    '''
                 }
             }
         }
+
 
         stage('Cleanup Local Images') {
             when {
@@ -173,7 +192,7 @@ pipeline {
 
     post {
         always {
-            sh "docker logout ${params.HARBOR_REGISTRY} || true"
+            sh "docker logout 3.0.195.225:80 || true"
         }
     }
 }
