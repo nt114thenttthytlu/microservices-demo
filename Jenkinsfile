@@ -48,12 +48,15 @@ pipeline {
                     echo "Installing .NET SDK..."
 
                     apt-get update || true
-                    apt-get install -y wget ca-certificates || true
+                    apt-get install -y wget ca-certificates libicu-dev
 
                     wget https://dot.net/v1/dotnet-install.sh
                     chmod +x dotnet-install.sh
 
                     ./dotnet-install.sh --channel 8.0 --install-dir $HOME/.dotnet
+
+                    export DOTNET_ROOT=$HOME/.dotnet
+                    export PATH=$PATH:$HOME/.dotnet:$HOME/.dotnet/tools
 
                     dotnet --version
                 '''
