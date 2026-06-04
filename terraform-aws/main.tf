@@ -10,12 +10,12 @@ module "vpc" {
   ]
 }
 
-module "ecr" {
-  source = "./modules/ecr"
+# module "ecr" {
+#   source = "./modules/ecr"
 
-  name        = var.name
-  environment = var.environment
-}
+#   name        = var.name
+#   environment = var.environment
+# }
 
 module "eks" {
   source = "./modules/eks"
