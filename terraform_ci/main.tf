@@ -89,7 +89,7 @@ module "sonarqube" {
 
   name          = var.name
   ami           = var.ami
-  instance_type = "t3.micro"
+  instance_type = "c7i-flex.large"
   subnet_id     = module.network.subnet_id
   sg_id         = aws_security_group.main.id
   key_name      = aws_key_pair.key.key_name
@@ -126,5 +126,11 @@ resource "aws_iam_role_policy_attachment" "flowlog" {
 
 resource "aws_cloudwatch_log_group" "vpc_flow" {
   name              = "/aws/vpc/flowlogs"
-  retention_in_days = 7
+  retention_in_days = 365
+  kms_key_id        = aws_kms_key.cloudwatch.arn
+}
+
+resource "aws_kms_key" "cloudwatch" {
+  description = "KMS key for CloudWatch logs"
+  enable_key_rotation = true
 }

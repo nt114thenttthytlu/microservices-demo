@@ -89,11 +89,17 @@ resource "aws_eks_node_group" "main" {
   depends_on = [
     aws_iam_role_policy_attachment.eks_node_group_role_attachment,
     aws_iam_role_policy_attachment.eks_cni_policy_attachment,
-    aws_iam_role_policy_attachment.ecr_readonly
+    aws_iam_role_policy_attachment.ecr_readonly,
+    aws_iam_role_policy_attachment.ssm_managed_instance
   ]
 
   tags = {
     Name = "${var.name}-node-group"
     Environment = var.environment
   }
+}
+
+resource "aws_iam_role_policy_attachment" "ssm_managed_instance" {
+  role       = aws_iam_role.eks_node_group_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }

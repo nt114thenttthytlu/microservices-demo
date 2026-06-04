@@ -1,12 +1,10 @@
-resource "aws_instance" "sonar" {
+resource "aws_instance" "harbor" {
   ami           = var.ami
   instance_type = var.instance_type
   subnet_id     = var.subnet_id
-
   vpc_security_group_ids = [var.sg_id]
   key_name = var.key_name
   iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
-
   ebs_optimized          = true
   monitoring = true
   metadata_options {
@@ -17,11 +15,10 @@ resource "aws_instance" "sonar" {
   root_block_device {
     encrypted = true
   }
-
   user_data = file("${path.module}/install.sh")
 
   tags = {
-    Name = "${var.name}-sonarqube"
+    Name = "${var.name}-harbor"
   }
 }
 
