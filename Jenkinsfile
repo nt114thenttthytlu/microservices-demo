@@ -305,3 +305,4 @@ def resolveDockerfilePath(String service) {
     }
 
     return path
+}
