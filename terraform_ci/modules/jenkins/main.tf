@@ -1,151 +1,49 @@
-resource "azurerm_resource_group" "rg" {
-  name     = "jenkins-rg"
-  location = var.location
-}
-
-resource "azurerm_virtual_network" "vnet" {
-  name                = "jenkins-vnet"
-  address_space       = ["10.0.0.0/16"]
-  location            = var.location
-  resource_group_name = azurerm_resource_group.rg.name
-}
-
-resource "azurerm_subnet" "subnet" {
-  name                 = "jenkins-subnet"
-  resource_group_name  = azurerm_resource_group.rg.name
-  virtual_network_name = azurerm_virtual_network.vnet.name
-  address_prefixes     = ["10.0.1.0/24"]
-}
-
-resource "azurerm_public_ip" "public_ip" {
-  name                = "jenkins-ip"
-  location            = var.location
-  resource_group_name = azurerm_resource_group.rg.name
-  allocation_method   = "Static"
-}
-
-resource "azurerm_network_security_group" "nsg" {
-  name                = "jenkins-nsg"
-  location            = var.location
-  resource_group_name = azurerm_resource_group.rg.name
-
-  security_rule {
-    name                       = "allow-jenkins"
-    priority                   = 1001
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    destination_port_range     = "8080"
-    source_port_range          = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
+resource "aws_instance" "jenkins" {
+  ami                    = var.ami
+  instance_type          = var.instance_type
+  subnet_id              = var.subnet_id
+  vpc_security_group_ids = [var.sg_id]
+  key_name               = var.key_name
+  ebs_optimized          = true
+  iam_instance_profile = aws_iam_instance_profile.ec2_profile.name
+  monitoring = true
+  metadata_options {
+    http_tokens = "required"
+    http_endpoint = "enabled"
   }
 
-  security_rule {
-    name                       = "allow-ssh"
-    priority                   = 1002
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    destination_port_range     = "22"
-    source_port_range          = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
+  root_block_device {
+    encrypted = true
   }
 
-  security_rule {
-    name                       = "allow-harbor-http"
-    priority                   = 1003
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    destination_port_range     = "80"
-    source_port_range          = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
+  user_data = file("${path.module}/install.sh")
 
-  security_rule {
-    name                       = "allow-harbor-https"
-    priority                   = 1004
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    destination_port_range     = "443"
-    source_port_range          = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
-  }
-
-  security_rule {
-    name                       = "allow-harbor-registry"
-    priority                   = 1005
-    direction                  = "Inbound"
-    access                     = "Allow"
-    protocol                   = "Tcp"
-    destination_port_range     = "5000"
-    source_port_range          = "*"
-    source_address_prefix      = "*"
-    destination_address_prefix = "*"
+  tags = {
+    Name = "${var.name}-jenkins"
   }
 }
 
-resource "azurerm_network_interface" "nic" {
-  name                = "jenkins-nic"
-  location            = var.location
-  resource_group_name = azurerm_resource_group.rg.name
+resource "aws_iam_role" "ec2_role" {
+  name = "${var.name}-ec2-role"
 
-  ip_configuration {
-    name                          = "internal"
-    subnet_id                     = azurerm_subnet.subnet.id
-    private_ip_address_allocation = "Dynamic"
-    public_ip_address_id          = azurerm_public_ip.public_ip.id
-  }
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Effect = "Allow"
+      Principal = {
+        Service = "ec2.amazonaws.com"
+      }
+      Action = "sts:AssumeRole"
+    }]
+  })
 }
 
-resource "azurerm_network_interface_security_group_association" "nsg_assoc" {
-  network_interface_id      = azurerm_network_interface.nic.id
-  network_security_group_id = azurerm_network_security_group.nsg.id
+resource "aws_iam_role_policy_attachment" "ssm" {
+  role       = aws_iam_role.ec2_role.name
+  policy_arn = "arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore"
 }
 
-resource "azurerm_linux_virtual_machine" "vm" {
-  name                = "jenkins-vm"
-  resource_group_name = azurerm_resource_group.rg.name
-  location            = var.location
-  size                = var.vm_size
-
-  admin_username = var.admin_username
-
-  network_interface_ids = [
-    azurerm_network_interface.nic.id,
-  ]
-
-  admin_ssh_key {
-    username   = var.admin_username
-    public_key = var.ssh_public_key
-  }
-
-  os_disk {
-    caching              = "ReadWrite"
-    storage_account_type = "Standard_LRS"
-  }
-
-  source_image_reference {
-    publisher = "Canonical"
-    offer     = "0001-com-ubuntu-server-jammy"
-    sku       = "22_04-lts"
-    version   = "latest"
-  }
-
-  custom_data = base64encode(templatefile("${path.module}/installing_jenkins.sh", {
-    harbor_hostname             = var.harbor_hostname
-    harbor_admin_password       = var.harbor_admin_password
-    harbor_admin_email          = var.harbor_admin_email
-    harbor_https_port           = var.harbor_https_port
-    harbor_http_port            = var.harbor_http_port
-    harbor_ssl_cert_country     = var.harbor_ssl_cert_country
-    harbor_ssl_cert_state       = var.harbor_ssl_cert_state
-    harbor_ssl_cert_city        = var.harbor_ssl_cert_city
-    harbor_ssl_cert_organization = var.harbor_ssl_cert_organization
-  }))
+resource "aws_iam_instance_profile" "ec2_profile" {
+  name = "${var.name}-ec2-profile"
+  role = aws_iam_role.ec2_role.name
 }

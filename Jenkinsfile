@@ -4,24 +4,33 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_BUILDKIT     = '1'
-        BUILDKIT_PROGRESS   = 'plain'
-        HARBOR_PROJECT      = 'sample-microservice'
+        DOCKER_BUILDKIT   = '1'
+        BUILDKIT_PROGRESS = 'plain'
+
+        HARBOR_PROJECT    = 'sample-microservice'
+
+        DOTNET_ROOT = '/root/.dotnet'
+        PATH = "/root/.dotnet:/root/.dotnet/tools:${env.PATH}"
     }
 
     parameters {
         choice(
             name: 'BUILD_TARGET',
-            choices: ['all', 'adservice', 'cartservice', 'checkoutservice', 'currencyservice',
-                      'emailservice', 'frontend', 'paymentservice', 'productcatalogservice',
-                      'recommendationservice', 'shippingservice', 'shoppingassistantservice'],
-            description: 'Select which service(s) to build'
+            choices: [
+                'all',
+                'adservice','cartservice','checkoutservice','currencyservice',
+                'emailservice','frontend','paymentservice',
+                'productcatalogservice','recommendationservice',
+                'shippingservice','shoppingassistantservice'
+            ]
         )
-        booleanParam(name: 'PUSH_IMAGES',        defaultValue: true,                  description: 'Push Docker images to Harbor?')
-        booleanParam(name: 'CLEANUP_LOCAL',       defaultValue: true,                  description: 'Remove local Docker images after push?')
-        string(name: 'HARBOR_REGISTRY',          defaultValue: 'localhost',            description: 'Harbor registry URL (e.g., 192.168.1.100)')
-        string(name: 'SONARQUBE_URL',            defaultValue: 'http://sonarqube:9000',description: 'SonarQube server URL')
-        string(name: 'KEEP_TAGS',                defaultValue: '5',                    description: 'Number of recent tags to keep in Harbor per service (0 = skip Harbor cleanup)')
+
+        booleanParam(name: 'PUSH_IMAGES', defaultValue: true)
+        booleanParam(name: 'RUN_SONAR', defaultValue: true)
+        booleanParam(name: 'UPDATE_GITOPS', defaultValue: true)
+
+        string(name: 'HARBOR_REGISTRY', defaultValue: 'harbor.thenttthytlu.io.vn')
+        string(name: 'GITOPS_REPO', defaultValue: 'https://github.com/nt114thenttthytlu/gitops-for-microservices-demo.git')
     }
 
     stages {
@@ -46,7 +55,9 @@ pipeline {
             }
         }
 
-        stage('Validate Services') {
+        stage('.NET + SonarQube') {
+            when { expression { params.RUN_SONAR } }
+
             steps {
                 script {
                     echo 'Validating service Dockerfiles...'
@@ -107,22 +118,22 @@ pipeline {
                         }
                     }
 
-                    parallel parallelStages
+            steps {
+                timeout(time: 5, unit: 'MINUTES') {
+                    waitForQualityGate abortPipeline: true
                 }
             }
         }
 
-        stage('Security Scan') {
-            when { branch 'main' }
+        stage('Login Harbor') {
+            when { expression { params.PUSH_IMAGES } }
+
             steps {
                 echo 'Security scan placeholder'
             }
         }
 
-        stage('Push Docker Images') {
-            when {
-                expression { params.PUSH_IMAGES == true }
-            }
+        stage('Build Images') {
             steps {
                 script {
                     echo "Pushing images (tag: ${imageTag})..."
@@ -133,14 +144,12 @@ pipeline {
                             || echo "Harbor may not be reachable"
                     '''
 
-                    withCredentials([usernamePassword(
-                            credentialsId: 'jenkin-cred',
-                            usernameVariable: 'HARBOR_USER',
-                            passwordVariable: 'HARBOR_PASS')]) {
+                            def dockerfilePath = resolveDockerfilePath(svc)
 
-                        sh 'echo $HARBOR_PASS | docker login -u $HARBOR_USER --password-stdin ${HARBOR_REGISTRY}'
+                            def buildContext = (svc == 'cartservice')
+                                ? 'src/cartservice/src'
+                                : "src/${svc}"
 
-                        getBuildServices().each { svc ->
                             sh """
                                 if docker image inspect ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} >/dev/null 2>&1; then
                                     docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
@@ -151,8 +160,6 @@ pipeline {
                                 fi
                             """
                         }
-
-                        sh 'docker logout || true'
                     }
                 }
             }
@@ -160,11 +167,9 @@ pipeline {
 
         stage('Cleanup Local Images') {
             when {
-                allOf {
-                    expression { params.PUSH_IMAGES == true }
-                    expression { params.CLEANUP_LOCAL == true }
-                }
+                expression { params.PUSH_IMAGES }
             }
+
             steps {
                 script {
                     echo "Removing local images (tag: ${imageTag})..."
@@ -179,27 +184,91 @@ pipeline {
                 }
             }
         }
+        
+        stage('Update GitOps Repo') {
 
         stage('Cleanup Harbor Old Tags') {
             when {
-                allOf {
-                    expression { params.PUSH_IMAGES == true }
-                    expression { params.KEEP_TAGS.toInteger() > 0 }
-                }
+                expression { params.UPDATE_GITOPS }
             }
+
             steps {
                 script {
                     def keepN = params.KEEP_TAGS.toInteger()
                     echo "Cleaning up Harbor — keeping ${keepN} most recent tags per service..."
 
-                    withCredentials([usernamePassword(
-                            credentialsId: 'jenkin-cred',
-                            usernameVariable: 'HARBOR_USER',
-                            passwordVariable: 'HARBOR_PASS')]) {
+                withCredentials([
+                    usernamePassword(
+                        credentialsId: 'github-token',
+                        usernameVariable: 'GITHUB_USER',
+                        passwordVariable: 'GITHUB_TOKEN'
+                    )
+                ]) {
+
+                    script {
+
+                        sh """
+                            rm -rf gitops
+
+                            git clone \
+                            https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/nt114thenttthytlu/gitops-for-microservices-demo.git \
+                            gitops
+
+                            cd gitops
+
+                            git config user.email "jenkins@local"
+                            git config user.name "jenkins"
+                        """
 
                         getBuildServices().each { svc ->
-                            cleanupHarborOldTags(svc, keepN)
+
+                            sh """
+                                cd gitops
+
+                                VALUES_FILE="${svc}/values.yaml"
+
+                                if [ -f "\$VALUES_FILE" ]; then
+
+                                    echo "Updating \$VALUES_FILE"
+
+                                    sed -i "s|repository:.*|repository: ${params.HARBOR_REGISTRY}/${env.HARBOR_PROJECT}/${svc}|g" \$VALUES_FILE
+
+                                    sed -i "s|tag:.*|tag: ${imageTag}|g" \$VALUES_FILE
+
+                                    grep -A2 image: \$VALUES_FILE || true
+
+                                else
+                                    echo "Skip ${svc} - values.yaml not found"
+                                fi
+                            """
                         }
+
+                        sh """
+                            cd gitops
+
+                            git add .
+
+                            git remote -v
+                            git config --get remote.origin.url
+
+                            git diff --cached --quiet || \
+                            git commit -m "ci: update images to ${imageTag}"
+
+                            git push origin main
+                        """
+                    }
+                }
+            }
+        }
+
+        stage('Cleanup Local Images') {
+            steps {
+                script {
+                    getBuildServices().each { svc ->
+                        sh """
+                            docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} || true
+                            docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest || true
+                        """
                     }
                     echo "Harbor cleanup done"
                 }
@@ -216,34 +285,36 @@ pipeline {
 
 
 def getServiceList() {
-    return ['adservice', 'cartservice', 'checkoutservice', 'currencyservice',
-            'emailservice', 'frontend', 'paymentservice', 'productcatalogservice',
-            'recommendationservice', 'shippingservice', 'shoppingassistantservice']
+    return [
+        'adservice','cartservice','checkoutservice','currencyservice',
+        'emailservice','frontend','paymentservice',
+        'productcatalogservice','recommendationservice',
+        'shippingservice','shoppingassistantservice'
+    ]
 }
 
 def getBuildServices() {
-    return (params.BUILD_TARGET == 'all') ? getServiceList() : [params.BUILD_TARGET]
+    return (params.BUILD_TARGET == 'all')
+        ? getServiceList()
+        : [params.BUILD_TARGET]
 }
 
 def resolveDockerfilePath(String service) {
+
     def serviceDir = "src/${service}"
 
-    def path = sh(
-        script: """
-            for candidate in \
-                "${serviceDir}/Dockerfile" \
-                "${serviceDir}/src/Dockerfile" \
-                "${serviceDir}/docker/Dockerfile" \
-                "${serviceDir}/build/Dockerfile"; do
-                [ -f "\$candidate" ] && echo "\$candidate" && exit 0
-            done
-            find "${serviceDir}" -name 'Dockerfile' -type f | sort | head -1
-        """,
-        returnStdout: true
-    ).trim()
+    def path = sh(script: """
+        for c in \
+            "${serviceDir}/Dockerfile" \
+            "${serviceDir}/src/Dockerfile" \
+            "${serviceDir}/docker/Dockerfile"; do
+            [ -f "\$c" ] && echo "\$c" && exit 0
+        done
+        find "${serviceDir}" -name Dockerfile | head -1
+    """, returnStdout: true).trim()
 
     if (!path) {
-        error "✗ No Dockerfile found anywhere under ${serviceDir} — aborting."
+        error "No Dockerfile found for ${service}"
     }
 
     return path
