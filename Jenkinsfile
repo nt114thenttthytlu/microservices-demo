@@ -30,7 +30,7 @@ pipeline {
             steps {
                 script {
                     checkout scm
-                    echo "✓ Checked out — commit: ${env.GIT_COMMIT}"
+                    echo "Checked out — commit: ${env.GIT_COMMIT}"
                 }
             }
         }
@@ -41,7 +41,7 @@ pipeline {
                     def gitShort    = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     def buildNumber = env.BUILD_NUMBER
                     imageTag = "${buildNumber}-${gitShort}"
-                    echo "✓ Image tag: ${imageTag}"
+                    echo "Image tag: ${imageTag}"
                 }
             }
         }
@@ -49,10 +49,10 @@ pipeline {
         stage('Validate Services') {
             steps {
                 script {
-                    echo '✓ Validating service Dockerfiles...'
+                    echo 'Validating service Dockerfiles...'
                     getBuildServices().each { service ->
                         def path = resolveDockerfilePath(service)
-                        echo "  ✓ ${service} → ${path}"
+                        echo "${service} → ${path}"
                     }
                 }
             }
@@ -87,9 +87,9 @@ pipeline {
                                                 """
                                             }
                                         }
-                                        echo "  ✓ ${svc} scan completed"
+                                        echo "${svc} scan completed"
                                     } catch (e) {
-                                        echo "  ⚠ ${svc} scan failed — ${e.message}"
+                                        echo "${svc} scan failed — ${e.message}"
                                     }
                                 }
 
@@ -101,7 +101,7 @@ pipeline {
                                             -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest \
                                             ${buildContext}
                                     """
-                                    echo "  ✓ ${svc} image built"
+                                    echo "${svc} image built"
                                 }
                             }
                         }
@@ -115,7 +115,7 @@ pipeline {
         stage('Security Scan') {
             when { branch 'main' }
             steps {
-                echo '✓ Security scan placeholder'
+                echo 'Security scan placeholder'
             }
         }
 
@@ -125,12 +125,12 @@ pipeline {
             }
             steps {
                 script {
-                    echo "✓ Pushing images (tag: ${imageTag})..."
+                    echo "Pushing images (tag: ${imageTag})..."
 
                     sh '''
                         curl -sf -k https://${HARBOR_REGISTRY}/api/v2.0/health \
-                            && echo "  ✓ Harbor reachable" \
-                            || echo "  ⚠ Harbor may not be reachable"
+                            && echo "Harbor reachable" \
+                            || echo "Harbor may not be reachable"
                     '''
 
                     withCredentials([usernamePassword(
@@ -145,9 +145,9 @@ pipeline {
                                 if docker image inspect ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} >/dev/null 2>&1; then
                                     docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
                                     docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest
-                                    echo "  ✓ ${svc} pushed"
+                                    echo " ${svc} pushed"
                                 else
-                                    echo "  ⚠ Image not found for ${svc}, skipping push"
+                                    echo "Image not found for ${svc}, skipping push"
                                 fi
                             """
                         }
@@ -158,7 +158,6 @@ pipeline {
             }
         }
 
-        // ── NEW: Cleanup local Docker images ──────────────────────────────────
         stage('Cleanup Local Images') {
             when {
                 allOf {
@@ -168,21 +167,19 @@ pipeline {
             }
             steps {
                 script {
-                    echo "✓ Removing local images (tag: ${imageTag})..."
+                    echo "Removing local images (tag: ${imageTag})..."
                     getBuildServices().each { svc ->
                         sh """
                             docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} || true
                             docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest       || true
                         """
                     }
-                    // Remove dangling layers left over from multi-stage builds
                     sh 'docker image prune -f'
-                    echo "  ✓ Local cleanup done"
+                    echo "Local cleanup done"
                 }
             }
         }
 
-        // ── NEW: Cleanup old tags in Harbor ───────────────────────────────────
         stage('Cleanup Harbor Old Tags') {
             when {
                 allOf {
@@ -193,7 +190,7 @@ pipeline {
             steps {
                 script {
                     def keepN = params.KEEP_TAGS.toInteger()
-                    echo "✓ Cleaning up Harbor — keeping ${keepN} most recent tags per service..."
+                    echo "Cleaning up Harbor — keeping ${keepN} most recent tags per service..."
 
                     withCredentials([usernamePassword(
                             credentialsId: 'jenkin-cred',
@@ -204,7 +201,7 @@ pipeline {
                             cleanupHarborOldTags(svc, keepN)
                         }
                     }
-                    echo "  ✓ Harbor cleanup done"
+                    echo "Harbor cleanup done"
                 }
             }
         }
@@ -212,12 +209,11 @@ pipeline {
 
     post {
         always  { sh 'docker logout || true' }
-        success { echo '✓ Pipeline succeeded!' }
-        failure { echo '✗ Pipeline failed!'   }
+        success { echo 'Pipeline succeeded!' }
+        failure { echo 'Pipeline failed!'   }
     }
 }
 
-// ==================== Helper Functions ====================
 
 def getServiceList() {
     return ['adservice', 'cartservice', 'checkoutservice', 'currencyservice',
@@ -253,18 +249,8 @@ def resolveDockerfilePath(String service) {
     return path
 }
 
-// ── NEW helper: delete tags older than the N most recent in Harbor ────────────
-//
-// Logic:
-//   1. Fetch all tags for the repository via Harbor API v2
-//   2. Sort by push_time descending (newest first)
-//   3. Skip the first keepN tags + always skip "latest"
-//   4. DELETE the rest via the artifact digest — safer than tag name deletion
-//      because one digest can carry multiple tags; deleting by digest removes all
-//      of them at once without accidentally leaving orphaned layers.
-//
+
 def cleanupHarborOldTags(String service, int keepN) {
-    // HARBOR_USER / HARBOR_PASS injected by the caller's withCredentials block
     sh """
         set -euo pipefail
 
