@@ -95,3 +95,4 @@ Thumbs.db
 
 #markdowns
 *.md
+.github\workflows\checkov_jenkinswebhook.yml
