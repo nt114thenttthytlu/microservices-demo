@@ -74,7 +74,7 @@ module "jenkins" {
 }
 
 module "harbor" {
-  source = "./modules/harbor"
+  source = "./modules/harbor_ec2"
 
   name          = var.name
   ami           = var.ami
@@ -95,42 +95,4 @@ module "sonarqube" {
   key_name      = aws_key_pair.key.key_name
 }
 
-resource "aws_flow_log" "this" {
-  log_destination      = aws_cloudwatch_log_group.vpc_flow.arn
-  log_destination_type = "cloud-watch-logs"
-  traffic_type         = "ALL"
-  vpc_id               = module.network.vpc_id
 
-  iam_role_arn = aws_iam_role.flowlog.arn
-}
-
-resource "aws_iam_role" "flowlog" {
-  name = "${var.name}-flowlog-role"
-
-  assume_role_policy = jsonencode({
-    Version = "2012-10-17"
-    Statement = [{
-      Effect = "Allow"
-      Principal = {
-        Service = "vpc-flow-logs.amazonaws.com"
-      }
-      Action = "sts:AssumeRole"
-    }]
-  })
-}
-
-resource "aws_iam_role_policy_attachment" "flowlog" {
-  role       = aws_iam_role.flowlog.name
-  policy_arn = "arn:aws:iam::aws:policy/service-role/AmazonVPCFlowLogsRole"
-}
-
-resource "aws_cloudwatch_log_group" "vpc_flow" {
-  name              = "/aws/vpc/flowlogs"
-  retention_in_days = 365
-  kms_key_id        = aws_kms_key.cloudwatch.arn
-}
-
-resource "aws_kms_key" "cloudwatch" {
-  description = "KMS key for CloudWatch logs"
-  enable_key_rotation = true
-}
