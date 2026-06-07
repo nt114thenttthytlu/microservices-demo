@@ -1,4 +1,5 @@
 def imageTag = ''
+def servicesToProcess = [] 
 
 pipeline {
     agent any
@@ -7,311 +8,308 @@ pipeline {
         DOCKER_BUILDKIT     = '1'
         BUILDKIT_PROGRESS   = 'plain'
         HARBOR_PROJECT      = 'sample-microservice'
+        DOTNET_ROOT         = '/root/.dotnet'
+        PATH                = "/root/.dotnet:/root/.dotnet/tools:${env.PATH}"
     }
 
     parameters {
         choice(
             name: 'BUILD_TARGET',
-            choices: ['all', 'adservice', 'cartservice', 'checkoutservice', 'currencyservice',
+            choices: ['auto', 'all', 'adservice', 'cartservice', 'checkoutservice', 'currencyservice',
                       'emailservice', 'frontend', 'paymentservice', 'productcatalogservice',
                       'recommendationservice', 'shippingservice', 'shoppingassistantservice'],
-            description: 'Select which service(s) to build'
+            description: 'Select which service(s) to build. "auto" uses Git diff.'
         )
-        booleanParam(name: 'PUSH_IMAGES',        defaultValue: true,                  description: 'Push Docker images to Harbor?')
-        booleanParam(name: 'CLEANUP_LOCAL',       defaultValue: true,                  description: 'Remove local Docker images after push?')
-        string(name: 'HARBOR_REGISTRY',          defaultValue: 'localhost',            description: 'Harbor registry URL (e.g., 192.168.1.100)')
-        string(name: 'SONARQUBE_URL',            defaultValue: 'http://sonarqube:9000',description: 'SonarQube server URL')
-        string(name: 'KEEP_TAGS',                defaultValue: '5',                    description: 'Number of recent tags to keep in Harbor per service (0 = skip Harbor cleanup)')
+        booleanParam(name: 'PUSH_IMAGES',   defaultValue: true,  description: 'Push Docker images to Harbor?')
+        booleanParam(name: 'RUN_SONAR',     defaultValue: true,  description: 'Run SonarQube Analysis & Quality Gate?')
+        booleanParam(name: 'UPDATE_GITOPS', defaultValue: true,  description: 'Update tags in GitOps repo?')
+        booleanParam(name: 'CLEANUP_LOCAL', defaultValue: true,  description: 'Remove local Docker images after push?')
+        string(name: 'KEEP_TAGS',           defaultValue: '5',   description: 'Number of recent tags to keep in Harbor (0 = skip)')
     }
 
     stages {
-
         stage('Checkout') {
             steps {
-                script {
-                    checkout scm
-                    echo "✓ Checked out — commit: ${env.GIT_COMMIT}"
-                }
+                checkout scm
             }
         }
 
-        stage('Prepare Image Tag') {
+        stage('Prepare Target & Tag') {
             steps {
                 script {
-                    def gitShort    = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
-                    def buildNumber = env.BUILD_NUMBER
-                    imageTag = "${buildNumber}-${gitShort}"
-                    echo "✓ Image tag: ${imageTag}"
-                }
-            }
-        }
+                    def gitShort = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
+                    imageTag = "${BUILD_NUMBER}-${gitShort}"
+                    echo "✓ Target Image tag: ${imageTag}"
 
-        stage('Validate Services') {
-            steps {
-                script {
-                    echo '✓ Validating service Dockerfiles...'
-                    getBuildServices().each { service ->
-                        def path = resolveDockerfilePath(service)
-                        echo "  ✓ ${service} → ${path}"
+                    // Tối ưu: Chỉ build những service có code thay đổi (nếu chọn 'auto')
+                    servicesToProcess = getBuildServices()
+                    if (servicesToProcess.isEmpty()) {
+                        currentBuild.result = 'SUCCESS'
+                        echo "✓ Không có thay đổi nào trong thư mục services. Bỏ qua Build."
+                    } else {
+                        echo "✓ Các services sẽ được xử lý: ${servicesToProcess.join(', ')}"
                     }
                 }
             }
         }
 
-        stage('Build & Analyze Services') {
+        stage('Parallel: Sonar, Build & Push') {
+            when { expression { !servicesToProcess.isEmpty() } }
             steps {
                 script {
                     stash name: 'source', includes: 'src/**'
-
                     def parallelStages = [:]
 
-                    getBuildServices().each { service ->
-                        def svc = service
+                    // Gọi tất cả Credentials cần thiết (Harbor Account + Secret Registry URL)
+                    withCredentials([
+                        usernamePassword(credentialsId: 'harbor-creds', usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASS'),
+                        string(credentialsId: 'HARBOR_REGISTRY_URL', variable: 'SECRET_REGISTRY_URL'),
+                        string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')
+                    ]) {
+                        servicesToProcess.each { service ->
+                            def svc = service 
 
-                        parallelStages[svc] = {
-                            node {
-                                unstash 'source'
+                            parallelStages[svc] = {
+                                node {
+                                    unstash 'source'
+                                    def dockerfilePath = resolveDockerfilePath(svc)
+                                    def buildContext   = (svc == 'cartservice') ? 'src/cartservice/src' : "src/${svc}"
 
-                                def dockerfilePath = resolveDockerfilePath(svc)
-                                def buildContext   = (svc == 'cartservice') ? 'src/cartservice/src' : "src/${svc}"
-
-                                stage("${svc}: SonarQube Scan") {
-                                    try {
-                                        dir("src/${svc}") {
-                                            def scannerHome = tool 'Sonarqube'
-                                            withSonarQubeEnv() {
-                                                sh """
-                                                    ${scannerHome}/bin/sonar-scanner \
-                                                        -Dsonar.projectKey=${svc} \
-                                                        -Dsonar.sources=.
-                                                """
+                                    // --- 1. SONARQUBE CHẶN LỖI (FAIL-FAST) ---
+                                    if (params.RUN_SONAR) {
+                                        stage("${svc}: SonarQube") {
+                                            withSonarQubeEnv('sonarqube') {
+                                                // Xử lý riêng biệt cho .NET (cartservice) và các ngôn ngữ khác
+                                                if (svc == 'cartservice') {
+                                                    sh """
+                                                        cd src/${svc}
+                                                        dotnet tool install --global dotnet-sonarscanner || true
+                                                        dotnet restore
+                                                        dotnet sonarscanner begin /k:${svc} /d:sonar.host.url=\$SONAR_HOST_URL /d:sonar.login=\$SONAR_TOKEN /d:sonar.exclusions="**/Dockerfile*"
+                                                        dotnet build
+                                                        dotnet sonarscanner end /d:sonar.login=\$SONAR_TOKEN
+                                                    """
+                                                } else {
+                                                    def scannerHome = tool 'sonar-scanner'
+                                                    sh """
+                                                        ${scannerHome}/bin/sonar-scanner \
+                                                            -Dsonar.projectKey=${svc} \
+                                                            -Dsonar.sources=${buildContext} \
+                                                            -Dsonar.login=\$SONAR_TOKEN
+                                                    """
+                                                }
+                                            }
+                                            timeout(time: 5, unit: 'MINUTES') {
+                                                def qg = waitForQualityGate()
+                                                if (qg.status != 'OK') {
+                                                    error "✗ CHẶN LẠI: ${svc} trượt SonarQube (Trạng thái: ${qg.status}). Hủy Build!"
+                                                }
                                             }
                                         }
-                                        echo "  ✓ ${svc} scan completed"
-                                    } catch (e) {
-                                        echo "  ⚠ ${svc} scan failed — ${e.message}"
                                     }
-                                }
 
-                                stage("${svc}: Build Docker Image") {
-                                    sh """
-                                        docker build \
-                                            -f ${dockerfilePath} \
-                                            -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} \
-                                            -t ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest \
-                                            ${buildContext}
-                                    """
-                                    echo "  ✓ ${svc} image built"
+                                    // --- 2. BUILD DOCKER (DÙNG CACHE) ---
+                                    stage("${svc}: Build Image") {
+                                        sh """
+                                            docker build \
+                                                --build-arg BUILDKIT_INLINE_CACHE=1 \
+                                                --cache-from \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest \
+                                                -f ${dockerfilePath} \
+                                                -t \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:${imageTag} \
+                                                -t \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest \
+                                                ${buildContext}
+                                        """
+                                    }
+
+                                    // --- 3. PUSH LUÔN SAU KHI BUILD ---
+                                    if (params.PUSH_IMAGES) {
+                                        stage("${svc}: Push Image") {
+                                            sh """
+                                                echo "\$HARBOR_PASS" | docker login \${SECRET_REGISTRY_URL} -u "\$HARBOR_USER" --password-stdin
+                                                docker push \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:${imageTag}
+                                                docker push \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest
+                                            """
+                                        }
+                                    }
                                 }
                             }
                         }
-                    }
-
-                    parallel parallelStages
-                }
-            }
-        }
-
-        stage('Security Scan') {
-            when { branch 'main' }
-            steps {
-                echo '✓ Security scan placeholder'
-            }
-        }
-
-        stage('Push Docker Images') {
-            when {
-                expression { params.PUSH_IMAGES == true }
-            }
-            steps {
-                script {
-                    echo "✓ Pushing images (tag: ${imageTag})..."
-
-                    sh '''
-                        curl -sf -k https://${HARBOR_REGISTRY}/api/v2.0/health \
-                            && echo "  ✓ Harbor reachable" \
-                            || echo "  ⚠ Harbor may not be reachable"
-                    '''
-
-                    withCredentials([usernamePassword(
-                            credentialsId: 'jenkin-cred',
-                            usernameVariable: 'HARBOR_USER',
-                            passwordVariable: 'HARBOR_PASS')]) {
-
-                        sh 'echo $HARBOR_PASS | docker login -u $HARBOR_USER --password-stdin ${HARBOR_REGISTRY}'
-
-                        getBuildServices().each { svc ->
-                            sh """
-                                if docker image inspect ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} >/dev/null 2>&1; then
-                                    docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag}
-                                    docker push ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest
-                                    echo "  ✓ ${svc} pushed"
-                                else
-                                    echo "  ⚠ Image not found for ${svc}, skipping push"
-                                fi
-                            """
-                        }
-
-                        sh 'docker logout || true'
+                        parallel parallelStages
                     }
                 }
             }
         }
 
-        // ── NEW: Cleanup local Docker images ──────────────────────────────────
-        stage('Cleanup Local Images') {
+        // --- 4. GITOPS UPDATE (HELM VALUES.YAML) ---
+        stage('Update GitOps Repo (Helm)') {
             when {
                 allOf {
-                    expression { params.PUSH_IMAGES == true }
-                    expression { params.CLEANUP_LOCAL == true }
+                    expression { !servicesToProcess.isEmpty() }
+                    expression { params.UPDATE_GITOPS }
+                    expression { params.PUSH_IMAGES }
+                    branch 'main'
                 }
             }
             steps {
                 script {
-                    echo "✓ Removing local images (tag: ${imageTag})..."
-                    getBuildServices().each { svc ->
+                    echo "✓ Đang cập nhật Helm values.yaml trên GitOps repo..."
+                    
+                    withCredentials([
+                        usernamePassword(credentialsId: 'git-credentials-id', usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN'),
+                        string(credentialsId: 'HARBOR_REGISTRY_URL', variable: 'SECRET_REGISTRY_URL')
+                    ]) {
                         sh """
-                            docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:${imageTag} || true
-                            docker rmi ${params.HARBOR_REGISTRY}/${HARBOR_PROJECT}/${svc}:latest       || true
+                            rm -rf gitops
+                            git clone https://${GITHUB_USER}:${GITHUB_TOKEN}@github.com/nt114thenttthytlu/gitops-for-microservices-demo.git gitops
+                            cd gitops
+
+                            git config user.email "jenkins-bot@yourdomain.com"
+                            git config user.name "Jenkins CI Bot"
+
+                            for svc in ${servicesToProcess.join(' ')}; do
+                                VALUES_FILE="\${svc}/values.yaml"
+
+                                if [ -f "\$VALUES_FILE" ]; then
+                                    echo "  Cập nhật \${VALUES_FILE}..."
+                                    
+                                    # Cập nhật repository bằng Secret URL và cập nhật Tag
+                                    sed -i "s|repository:.*|repository: \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/\${svc}|g" \$VALUES_FILE
+                                    sed -i "s|tag:.*|tag: ${imageTag}|g" \$VALUES_FILE
+                                    
+                                    echo "  ✓ Đã cập nhật xong \${svc}"
+                                else
+                                    echo "  ⚠ Bỏ qua \${svc} - Không tìm thấy file values.yaml"
+                                fi
+                            done
+
+                            git add .
+                            git diff --cached --quiet || git commit -m "ci: auto-update helm values for images to tag ${imageTag} [ci skip]"
+                            git push origin main
                         """
                     }
-                    // Remove dangling layers left over from multi-stage builds
-                    sh 'docker image prune -f'
-                    echo "  ✓ Local cleanup done"
                 }
             }
         }
 
-        // ── NEW: Cleanup old tags in Harbor ───────────────────────────────────
-        stage('Cleanup Harbor Old Tags') {
-            when {
-                allOf {
-                    expression { params.PUSH_IMAGES == true }
-                    expression { params.KEEP_TAGS.toInteger() > 0 }
-                }
-            }
+        stage('Cleanup Local & Harbor') {
+            when { expression { !servicesToProcess.isEmpty() && params.PUSH_IMAGES } }
             steps {
                 script {
-                    def keepN = params.KEEP_TAGS.toInteger()
-                    echo "✓ Cleaning up Harbor — keeping ${keepN} most recent tags per service..."
-
-                    withCredentials([usernamePassword(
-                            credentialsId: 'jenkin-cred',
-                            usernameVariable: 'HARBOR_USER',
-                            passwordVariable: 'HARBOR_PASS')]) {
-
-                        getBuildServices().each { svc ->
-                            cleanupHarborOldTags(svc, keepN)
+                    withCredentials([
+                        usernamePassword(credentialsId: 'harbor-creds', usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASS'),
+                        string(credentialsId: 'HARBOR_REGISTRY_URL', variable: 'SECRET_REGISTRY_URL')
+                    ]) {
+                        // Dọn Local
+                        if (params.CLEANUP_LOCAL) {
+                            servicesToProcess.each { svc ->
+                                sh """
+                                    docker rmi \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:${imageTag} || true
+                                    docker rmi \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest || true
+                                """
+                            }
+                            sh 'docker image prune -f'
+                        }
+                        
+                        // Dọn Harbor
+                        def keepN = params.KEEP_TAGS.toInteger()
+                        if (keepN > 0) {
+                            servicesToProcess.each { svc ->
+                                cleanupHarborOldTags(svc, keepN)
+                            }
                         }
                     }
-                    echo "  ✓ Harbor cleanup done"
                 }
             }
         }
     }
 
     post {
-        always  { sh 'docker logout || true' }
-        success { echo '✓ Pipeline succeeded!' }
-        failure { echo '✗ Pipeline failed!'   }
+        always {
+            withCredentials([string(credentialsId: 'HARBOR_REGISTRY_URL', variable: 'SECRET_REGISTRY_URL')]) {
+                sh "docker logout \${SECRET_REGISTRY_URL} || true"
+            }
+        }
+        success { echo '✓ Pipeline hoàn thành xuất sắc!' }
+        failure { echo '✗ Pipeline thất bại! Vui lòng kiểm tra lại log.' }
     }
 }
 
 // ==================== Helper Functions ====================
 
 def getServiceList() {
-    return ['adservice', 'cartservice', 'checkoutservice', 'currencyservice',
-            'emailservice', 'frontend', 'paymentservice', 'productcatalogservice',
-            'recommendationservice', 'shippingservice', 'shoppingassistantservice']
+    return ['adservice','cartservice','checkoutservice','currencyservice',
+            'emailservice','frontend','paymentservice',
+            'productcatalogservice','recommendationservice',
+            'shippingservice','shoppingassistantservice']
 }
 
 def getBuildServices() {
-    return (params.BUILD_TARGET == 'all') ? getServiceList() : [params.BUILD_TARGET]
+    if (params.BUILD_TARGET == 'all') return getServiceList()
+    if (params.BUILD_TARGET != 'auto') return [params.BUILD_TARGET]
+
+    def changedServices = []
+    try {
+        def prevCommit = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
+        def diffCmd = prevCommit ? "git diff --name-only ${prevCommit} ${env.GIT_COMMIT}" : "git show --name-only --format="
+        
+        def changedFiles = sh(script: diffCmd, returnStdout: true).trim().split('\n')
+        def allServices = getServiceList()
+        
+        for (file in changedFiles) {
+            for (svc in allServices) {
+                if (file.startsWith("src/${svc}/") && !changedServices.contains(svc)) {
+                    changedServices.add(svc)
+                }
+            }
+        }
+    } catch (Exception e) {
+        echo "⚠ Không thể xác định file thay đổi. Build ALL."
+        return getServiceList()
+    }
+    return changedServices
 }
 
 def resolveDockerfilePath(String service) {
     def serviceDir = "src/${service}"
+    def path = sh(script: """
+        for c in \
+            "${serviceDir}/Dockerfile" \
+            "${serviceDir}/src/Dockerfile" \
+            "${serviceDir}/docker/Dockerfile"; do
+            [ -f "\$c" ] && echo "\$c" && exit 0
+        done
+        find "${serviceDir}" -name Dockerfile | head -1
+    """, returnStdout: true).trim()
 
-    def path = sh(
-        script: """
-            for candidate in \
-                "${serviceDir}/Dockerfile" \
-                "${serviceDir}/src/Dockerfile" \
-                "${serviceDir}/docker/Dockerfile" \
-                "${serviceDir}/build/Dockerfile"; do
-                [ -f "\$candidate" ] && echo "\$candidate" && exit 0
-            done
-            find "${serviceDir}" -name 'Dockerfile' -type f | sort | head -1
-        """,
-        returnStdout: true
-    ).trim()
-
-    if (!path) {
-        error "✗ No Dockerfile found anywhere under ${serviceDir} — aborting."
-    }
-
+    if (!path) error "No Dockerfile found for ${service}"
     return path
 }
 
-// ── NEW helper: delete tags older than the N most recent in Harbor ────────────
-//
-// Logic:
-//   1. Fetch all tags for the repository via Harbor API v2
-//   2. Sort by push_time descending (newest first)
-//   3. Skip the first keepN tags + always skip "latest"
-//   4. DELETE the rest via the artifact digest — safer than tag name deletion
-//      because one digest can carry multiple tags; deleting by digest removes all
-//      of them at once without accidentally leaving orphaned layers.
-//
 def cleanupHarborOldTags(String service, int keepN) {
-    // HARBOR_USER / HARBOR_PASS injected by the caller's withCredentials block
     sh """
         set -euo pipefail
+        API="https://\${SECRET_REGISTRY_URL}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${service}/artifacts"
+        ARTIFACTS=\$(curl -sf -k -u "\${HARBOR_USER}:\${HARBOR_PASS}" "\${API}?page_size=100&page=1&with_tag=true&sort=-push_time" || echo "")
 
-        REGISTRY="${params.HARBOR_REGISTRY}"
-        PROJECT="${HARBOR_PROJECT}"
-        SVC="${service}"
-        KEEP=${keepN}
+        if [ -z "\${ARTIFACTS}" ]; then exit 0; fi
 
-        API="https://\${REGISTRY}/api/v2.0/projects/\${PROJECT}/repositories/\${SVC}/artifacts"
-
-        # Fetch artifacts sorted by push_time desc, page size 100 (adjust if you have more)
-        ARTIFACTS=\$(curl -sf -k -u "\${HARBOR_USER}:\${HARBOR_PASS}" \
-            "\${API}?page_size=100&page=1&with_tag=true&sort=-push_time")
-
-        # Extract digests to delete: skip the first KEEP entries, skip anything tagged "latest"
-        DIGESTS_TO_DELETE=\$(echo "\${ARTIFACTS}" | \
-            python3 -c "
+        DIGESTS_TO_DELETE=\$(echo "\${ARTIFACTS}" | python3 -c "
 import sys, json
-
-data   = json.load(sys.stdin)
-kept   = 0
-result = []
-
-for artifact in data:
-    tags = [t['name'] for t in (artifact.get('tags') or [])]
-    # Always preserve the 'latest' tag
-    if 'latest' in tags:
-        continue
-    if kept < int('${keepN}'):
-        kept += 1
-        continue
-    result.append(artifact['digest'])
-
-print('\n'.join(result))
+try:
+    data, kept, result = json.load(sys.stdin), 0, []
+    for artifact in data:
+        tags = [t['name'] for t in (artifact.get('tags') or [])]
+        if 'latest' in tags: continue
+        if kept < int('\${KEEP}'):
+            kept += 1; continue
+        result.append(artifact['digest'])
+    print('\\n'.join(result))
+except: pass
 ")
-
-        if [ -z "\${DIGESTS_TO_DELETE}" ]; then
-            echo "  ✓ \${SVC}: nothing to delete (≤ \${KEEP} tags)"
-            exit 0
-        fi
-
         echo "\${DIGESTS_TO_DELETE}" | while IFS= read -r digest; do
-            echo "  Deleting \${SVC}@\${digest}..."
-            curl -sf -k -X DELETE -u "\${HARBOR_USER}:\${HARBOR_PASS}" \
-                "\${API}/\${digest}" \
-                && echo "  ✓ Deleted \${digest}" \
-                || echo "  ⚠ Failed to delete \${digest} — skipping"
+            if [ -n "\$digest" ]; then
+                curl -sf -k -X DELETE -u "\${HARBOR_USER}:\${HARBOR_PASS}" "\${API}/\${digest}" || true
+            fi
         done
     """
 }
