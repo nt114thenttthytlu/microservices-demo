@@ -60,7 +60,7 @@ pipeline {
                     stash name: 'source', includes: 'src/**'
                     def parallelStages = [:]
 
-                    // Gọi tất cả Credentials cần thiết (Harbor Account + Secret Registry URL)
+                    // Gọi tất cả Credentials cần thiết (Harbor Account + Secret Registry URL + Sonar Token)
                     withCredentials([
                         usernamePassword(credentialsId: 'harbor-creds', usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASS'),
                         string(credentialsId: 'HARBOR_REGISTRY_URL', variable: 'SECRET_REGISTRY_URL'),

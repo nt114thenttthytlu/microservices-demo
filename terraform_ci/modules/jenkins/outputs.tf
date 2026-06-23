@@ -1,15 +1,15 @@
 output "public_ip" {
-  value = azurerm_public_ip.public_ip.ip_address
+  value = aws_instance.jenkins.public_ip
 }
 
 output "jenkins_url" {
-  value = "http://${azurerm_public_ip.public_ip.ip_address}:8080"
+  value = "http://${aws_instance.jenkins.public_ip}:8080"
 }
 
 output "harbor_url" {
-  value = "http://${azurerm_public_ip.public_ip.ip_address}"
+  value = "http://${aws_instance.jenkins.public_ip}"
 }
 
 output "harbor_registry" {
-  value = "${azurerm_public_ip.public_ip.ip_address}:5000"
+  value = "${aws_instance.jenkins.public_ip}:5000"
 }
