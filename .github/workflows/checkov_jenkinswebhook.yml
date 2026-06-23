@@ -16,18 +16,16 @@ jobs:
         with:
           python-version: "3.9"
 
-      - name: Test with Checkov
-        id: checkov
+      - name: Checkov scan terraform_azure
+        id: checkov_azure
         uses: bridgecrewio/checkov-action@v12
         with:
-          directory: terraform_azure,terraform_ci
+          directory: terraform_azure
           framework: terraform
 
-  trigger-jenkins:
-    runs-on: ubuntu-latest
-    needs: scan          # ← chỉ chạy khi job scan thành công
-    steps:
-      - name: Trigger Jenkins webhook
-        run: |
-          curl -f -X POST "${{ secrets.JENKINS_WEBHOOK_URL }}" \
-            --max-time 30
+      - name: Checkov scan terraform_ci
+        id: checkov_ci
+        uses: bridgecrewio/checkov-action@v12
+        with:
+          directory: terraform_ci
+          framework: terraform

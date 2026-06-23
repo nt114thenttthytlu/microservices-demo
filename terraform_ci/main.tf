@@ -1,20 +1,98 @@
+module "network" {
+  source   = "./modules/network"
+  name     = var.name
+  vpc_cidr = var.vpc_cidr
+  region   = var.region
+}
+
+resource "aws_security_group" "main" {
+  name   = "${var.name}-sg"
+  vpc_id = module.network.vpc_id
+
+  ingress {
+    from_port   = 22
+    to_port     = 22
+    protocol    = "tcp"
+    cidr_blocks = [module.network.vpc_cidr]
+  }
+
+  ingress {
+    from_port   = 8080
+    to_port     = 8080
+    protocol    = "tcp"
+    cidr_blocks = [module.network.vpc_cidr]
+  }
+
+  ingress {
+    from_port   = 9000
+    to_port     = 9000
+    protocol    = "tcp"
+    cidr_blocks = [module.network.vpc_cidr]
+  }
+
+  ingress {
+    from_port   = 80
+    to_port     = 80
+    protocol    = "tcp"
+    cidr_blocks = [module.network.vpc_cidr]
+  }
+
+  egress {
+    from_port   = 443
+    to_port     = 443
+    protocol    = "tcp"
+    cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  tags = {
+    Name        = "${var.name}-sg"
+    description = "Security group for Jenkins, Harbor, and SonarQube instances"
+  }
+}
+
+resource "aws_default_security_group" "this" {
+  vpc_id = module.network.vpc_id
+
+  ingress = []
+  egress  = []
+}
+
+resource "aws_key_pair" "key" {
+  key_name   = "${var.name}-key"
+  public_key = var.ssh_public_key
+}
+
 module "jenkins" {
   source = "./modules/jenkins"
 
-  location       = var.location
-  vm_size        = var.vm_size
-  admin_username = var.admin_username
-  ssh_public_key = var.ssh_public_key
-
-  # Harbor Configuration
-  # If harbor_hostname is empty, use the public IP automatically
-  harbor_hostname              = var.harbor_hostname != "" ? var.harbor_hostname : module.jenkins.public_ip
-  harbor_admin_password        = var.harbor_admin_password
-  harbor_admin_email           = var.harbor_admin_email
-  harbor_https_port            = var.harbor_https_port
-  harbor_http_port             = var.harbor_http_port
-  harbor_ssl_cert_country      = var.harbor_ssl_cert_country
-  harbor_ssl_cert_state        = var.harbor_ssl_cert_state
-  harbor_ssl_cert_city         = var.harbor_ssl_cert_city
-  harbor_ssl_cert_organization = var.harbor_ssl_cert_organization
+  name          = var.name
+  ami           = var.ami
+  instance_type = "c7i-flex.large"
+  subnet_id     = module.network.subnet_id
+  sg_id         = aws_security_group.main.id
+  key_name      = aws_key_pair.key.key_name
 }
+
+module "harbor" {
+  source = "./modules/harbor_ec2"
+
+  name          = var.name
+  ami           = var.ami
+  instance_type = "t3.micro"
+  subnet_id     = module.network.subnet_id
+  sg_id         = aws_security_group.main.id
+  key_name      = aws_key_pair.key.key_name
+}
+
+module "sonarqube" {
+  source = "./modules/sonarqube"
+
+  name          = var.name
+  ami           = var.ami
+  instance_type = "c7i-flex.large"
+  subnet_id     = module.network.subnet_id
+  sg_id         = aws_security_group.main.id
+  key_name      = aws_key_pair.key.key_name
+}
+
+
