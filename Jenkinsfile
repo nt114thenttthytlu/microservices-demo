@@ -5,11 +5,9 @@ pipeline {
     agent any
 
     environment {
-        DOCKER_BUILDKIT     = '1'
+        DOCKER_BUILDKIT     = '0'
         BUILDKIT_PROGRESS   = 'plain'
-        HARBOR_PROJECT      = 'sample-microservice'
-        DOTNET_ROOT         = '/root/.dotnet'
-        PATH                = "/root/.dotnet:/root/.dotnet/tools:${env.PATH}"
+        HARBOR_PROJECT      = 'microservices-demo'
     }
 
     parameters {
@@ -60,7 +58,6 @@ pipeline {
                     stash name: 'source', includes: 'src/**'
                     def parallelStages = [:]
 
-                    // Gọi tất cả Credentials cần thiết (Harbor Account + Secret Registry URL + Sonar Token)
                     withCredentials([
                         usernamePassword(credentialsId: 'harbor-creds', usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASS'),
                         string(credentialsId: 'HARBOR_REGISTRY_URL', variable: 'SECRET_REGISTRY_URL'),
@@ -75,26 +72,37 @@ pipeline {
                                     def dockerfilePath = resolveDockerfilePath(svc)
                                     def buildContext   = (svc == 'cartservice') ? 'src/cartservice/src' : "src/${svc}"
 
-                                    // --- 1. SONARQUBE CHẶN LỖI (FAIL-FAST) ---
+                                    // --- 1. SONARQUBE CHẶN LỖI ---
                                     if (params.RUN_SONAR) {
                                         stage("${svc}: SonarQube") {
                                             withSonarQubeEnv('sonarqube') {
-                                                // Xử lý riêng biệt cho .NET (cartservice) và các ngôn ngữ khác
                                                 if (svc == 'cartservice') {
                                                     sh """
+                                                        # Tắt yêu cầu thư viện đa ngôn ngữ của .NET
+                                                        export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
+                                                        
+                                                        # Trỏ chính xác đến thư mục mà ta đã cài đặt .NET hôm trước
+                                                        export DOTNET_ROOT=/usr/local/bin
+                                                        export PATH="\$PATH:\$HOME/.dotnet/tools:/root/.dotnet/tools:/usr/local/bin"
+                                                        
                                                         cd src/${svc}
+                                                        # Tải công cụ quét SonarQube cho .NET
                                                         dotnet tool install --global dotnet-sonarscanner || true
                                                         dotnet restore
-                                                        dotnet sonarscanner begin /k:${svc} /d:sonar.host.url=\$SONAR_HOST_URL /d:sonar.login=\$SONAR_TOKEN /d:sonar.exclusions="**/Dockerfile*"
+                                                        
+                                                        # Bắt đầu quét
+                                                        dotnet-sonarscanner begin /k:${svc} /d:sonar.host.url=\$SONAR_HOST_URL /d:sonar.login=\$SONAR_TOKEN /d:sonar.exclusions="**/Dockerfile*"
                                                         dotnet build
-                                                        dotnet sonarscanner end /d:sonar.login=\$SONAR_TOKEN
+                                                        dotnet-sonarscanner end /d:sonar.login=\$SONAR_TOKEN
                                                     """
                                                 } else {
+                                                    // Thêm -Dsonar.java.binaries để sửa lỗi adservice
                                                     def scannerHome = tool 'sonar-scanner'
                                                     sh """
                                                         ${scannerHome}/bin/sonar-scanner \
                                                             -Dsonar.projectKey=${svc} \
                                                             -Dsonar.sources=${buildContext} \
+                                                            -Dsonar.java.binaries=${buildContext} \
                                                             -Dsonar.login=\$SONAR_TOKEN
                                                     """
                                                 }
@@ -108,12 +116,10 @@ pipeline {
                                         }
                                     }
 
-                                    // --- 2. BUILD DOCKER (DÙNG CACHE) ---
+                                    // --- 2. BUILD DOCKER (Bỏ BuildKit để không bị lỗi Buildx) ---
                                     stage("${svc}: Build Image") {
                                         sh """
                                             docker build \
-                                                --build-arg BUILDKIT_INLINE_CACHE=1 \
-                                                --cache-from \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest \
                                                 -f ${dockerfilePath} \
                                                 -t \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:${imageTag} \
                                                 -t \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest \
@@ -289,27 +295,43 @@ def cleanupHarborOldTags(String service, int keepN) {
     sh """
         set -euo pipefail
         API="https://\${SECRET_REGISTRY_URL}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${service}/artifacts"
-        ARTIFACTS=\$(curl -sf -k -u "\${HARBOR_USER}:\${HARBOR_PASS}" "\${API}?page_size=100&page=1&with_tag=true&sort=-push_time" || echo "")
+        
+        # 1. Gọi API lấy danh sách toàn bộ Artifacts (đã được Harbor sắp xếp mới nhất lên đầu)
+        HTTP_RESPONSE=\$(curl -s -k -u "\${HARBOR_USER}:\${HARBOR_PASS}" -w "%{http_code}" "\${API}?page_size=100&page=1&with_tag=true&sort=-push_time")
+        
+        # Kiểm tra nếu curl bị lỗi thì bỏ qua
+        if [[ "\${HTTP_RESPONSE}" != *"200"* ]]; then
+            echo "⚠ Không thể lấy danh sách image của ${service} từ Harbor. Bỏ qua Cleanup."
+            exit 0
+        fi
+        
+        # Bóc tách riêng phần Body (JSON) ra khỏi Response Code
+        JSON_BODY=\$(curl -s -k -u "\${HARBOR_USER}:\${HARBOR_PASS}" "\${API}?page_size=100&page=1&with_tag=true&sort=-push_time")
 
-        if [ -z "\${ARTIFACTS}" ]; then exit 0; fi
-
-        DIGESTS_TO_DELETE=\$(echo "\${ARTIFACTS}" | python3 -c "
-import sys, json
-try:
-    data, kept, result = json.load(sys.stdin), 0, []
-    for artifact in data:
-        tags = [t['name'] for t in (artifact.get('tags') or [])]
-        if 'latest' in tags: continue
-        if kept < int('\${KEEP}'):
-            kept += 1; continue
-        result.append(artifact['digest'])
-    print('\\n'.join(result))
-except: pass
-")
-        echo "\${DIGESTS_TO_DELETE}" | while IFS= read -r digest; do
+        # 2. Dùng grep và awk để bóc tách các digest (Mã SHA)
+        # Cách hoạt động: Tìm dòng có chữ "digest", bóc lấy mã sha256...
+        ALL_DIGESTS=\$(echo "\$JSON_BODY" | grep -o '"digest":"[^"]*' | awk -F'"' '{print \$4}')
+        
+        # Đếm tổng số Image hiện có
+        TOTAL_IMAGES=\$(echo "\$ALL_DIGESTS" | wc -l)
+        
+        # Nếu số lượng image <= số lượng muốn giữ (hoặc ko có image nào) thì thoát
+        if [ "\$TOTAL_IMAGES" -le "${keepN}" ] || [ -z "\$ALL_DIGESTS" ]; then
+            echo "✓ Số lượng Image của ${service} (\$TOTAL_IMAGES) chưa vượt quá mức cho phép (${keepN}). Bỏ qua dọn dẹp."
+            exit 0
+        fi
+        
+        # 3. Chừa lại keepN cái mới nhất (nằm ở trên), lấy phần cũ bị thừa ra (nằm ở dưới)
+        DIGESTS_TO_DELETE=\$(echo "\$ALL_DIGESTS" | tail -n +\$(( ${keepN} + 1 )))
+        
+        # 4. Chạy vòng lặp xóa những cái thừa đi
+        for digest in \$DIGESTS_TO_DELETE; do
             if [ -n "\$digest" ]; then
-                curl -sf -k -X DELETE -u "\${HARBOR_USER}:\${HARBOR_PASS}" "\${API}/\${digest}" || true
+                echo "Đang xóa phiên bản cũ của ${service}: \$digest"
+                curl -sf -k -X DELETE -u "\${HARBOR_USER}:\${HARBOR_PASS}" "\${API}/\${digest}" || echo "⚠ Không thể xóa \$digest (có thể là tag latest)"
             fi
         done
+        
+        echo "✓ Hoàn tất dọn dẹp cho ${service}"
     """
 }
