@@ -37,15 +37,15 @@ pipeline {
                 script {
                     def gitShort = sh(script: 'git rev-parse --short HEAD', returnStdout: true).trim()
                     imageTag = "${BUILD_NUMBER}-${gitShort}"
-                    echo "✓ Target Image tag: ${imageTag}"
+                    echo "Target Image tag: ${imageTag}"
 
                     // Tối ưu: Chỉ build những service có code thay đổi (nếu chọn 'auto')
                     servicesToProcess = getBuildServices()
                     if (servicesToProcess.isEmpty()) {
                         currentBuild.result = 'SUCCESS'
-                        echo "✓ Không có thay đổi nào trong thư mục services. Bỏ qua Build."
+                        echo "Không có thay đổi nào trong thư mục services. Bỏ qua Build."
                     } else {
-                        echo "✓ Các services sẽ được xử lý: ${servicesToProcess.join(', ')}"
+                        echo "Các services sẽ được xử lý: ${servicesToProcess.join(', ')}"
                     }
                 }
             }
@@ -158,7 +158,7 @@ pipeline {
             }
             steps {
                 script {
-                    echo "✓ Đang cập nhật Helm values.yaml trên GitOps repo..."
+                    echo "Đang cập nhật Helm values.yaml trên GitOps repo..."
                     
                     withCredentials([
                         usernamePassword(credentialsId: 'git-credentials-id', usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN'),
@@ -235,7 +235,7 @@ pipeline {
                 sh "docker logout \${SECRET_REGISTRY_URL} || true"
             }
         }
-        success { echo '✓ Pipeline hoàn thành xuất sắc!' }
+        success { echo '✓ Pipeline hoàn thành' }
         failure { echo '✗ Pipeline thất bại! Vui lòng kiểm tra lại log.' }
     }
 }
@@ -294,44 +294,44 @@ def resolveDockerfilePath(String service) {
 def cleanupHarborOldTags(String service, int keepN) {
     sh """
         set -euo pipefail
+
         API="https://\${SECRET_REGISTRY_URL}/api/v2.0/projects/${HARBOR_PROJECT}/repositories/${service}/artifacts"
-        
-        # 1. Gọi API lấy danh sách toàn bộ Artifacts (đã được Harbor sắp xếp mới nhất lên đầu)
-        HTTP_RESPONSE=\$(curl -s -k -u "\${HARBOR_USER}:\${HARBOR_PASS}" -w "%{http_code}" "\${API}?page_size=100&page=1&with_tag=true&sort=-push_time")
-        
-        # Kiểm tra nếu curl bị lỗi thì bỏ qua
-        if [[ "\${HTTP_RESPONSE}" != *"200"* ]]; then
-            echo "⚠ Không thể lấy danh sách image của ${service} từ Harbor. Bỏ qua Cleanup."
+
+        echo "🔍 Checking Harbor repo for ${service}..."
+
+        # Lấy HTTP code riêng
+        HTTP_CODE=\$(curl -s -o /dev/null -w "%{http_code}" -u "\${HARBOR_USER}:\${HARBOR_PASS}" "\${API}?page_size=1&with_tag=true")
+
+        # Nếu repo chưa tồn tại (404) => bỏ qua cleanup
+        if [ "\$HTTP_CODE" = "404" ]; then
+            echo "✓ ${service} chưa có image trong Harbor (first build). Skip cleanup."
             exit 0
         fi
-        
-        # Bóc tách riêng phần Body (JSON) ra khỏi Response Code
+
+        # Nếu lỗi khác => cũng bỏ qua để không fail pipeline
+        if [ "\$HTTP_CODE" != "200" ]; then
+            echo "⚠ Không truy cập được Harbor API (${service}), HTTP=\$HTTP_CODE. Skip cleanup."
+            exit 0
+        fi
+
         JSON_BODY=\$(curl -s -k -u "\${HARBOR_USER}:\${HARBOR_PASS}" "\${API}?page_size=100&page=1&with_tag=true&sort=-push_time")
 
-        # 2. Dùng grep và awk để bóc tách các digest (Mã SHA)
-        # Cách hoạt động: Tìm dòng có chữ "digest", bóc lấy mã sha256...
         ALL_DIGESTS=\$(echo "\$JSON_BODY" | grep -o '"digest":"[^"]*' | awk -F'"' '{print \$4}')
-        
-        # Đếm tổng số Image hiện có
+
         TOTAL_IMAGES=\$(echo "\$ALL_DIGESTS" | wc -l)
-        
-        # Nếu số lượng image <= số lượng muốn giữ (hoặc ko có image nào) thì thoát
-        if [ "\$TOTAL_IMAGES" -le "${keepN}" ] || [ -z "\$ALL_DIGESTS" ]; then
-            echo "✓ Số lượng Image của ${service} (\$TOTAL_IMAGES) chưa vượt quá mức cho phép (${keepN}). Bỏ qua dọn dẹp."
+
+        if [ -z "\$ALL_DIGESTS" ] || [ "\$TOTAL_IMAGES" -le ${keepN} ]; then
+            echo "✓ Không cần cleanup (${service}) - total=\$TOTAL_IMAGES"
             exit 0
         fi
-        
-        # 3. Chừa lại keepN cái mới nhất (nằm ở trên), lấy phần cũ bị thừa ra (nằm ở dưới)
+
         DIGESTS_TO_DELETE=\$(echo "\$ALL_DIGESTS" | tail -n +\$(( ${keepN} + 1 )))
-        
-        # 4. Chạy vòng lặp xóa những cái thừa đi
+
         for digest in \$DIGESTS_TO_DELETE; do
-            if [ -n "\$digest" ]; then
-                echo "Đang xóa phiên bản cũ của ${service}: \$digest"
-                curl -sf -k -X DELETE -u "\${HARBOR_USER}:\${HARBOR_PASS}" "\${API}/\${digest}" || echo "⚠ Không thể xóa \$digest (có thể là tag latest)"
-            fi
+            echo "🗑 Deleting old image: \$digest"
+            curl -sf -k -X DELETE -u "\${HARBOR_USER}:\${HARBOR_PASS}" "\${API}/\${digest}" || true
         done
-        
-        echo "✓ Hoàn tất dọn dẹp cho ${service}"
+
+        echo "✓ Cleanup done for ${service}"
     """
 }
