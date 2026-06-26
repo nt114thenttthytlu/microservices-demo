@@ -253,26 +253,43 @@ def getBuildServices() {
     if (params.BUILD_TARGET == 'all') return getServiceList()
     if (params.BUILD_TARGET != 'auto') return [params.BUILD_TARGET]
 
-    def changedServices = []
+    def allServices = getServiceList()
+
     try {
-        def prevCommit = env.GIT_PREVIOUS_SUCCESSFUL_COMMIT
-        def diffCmd = prevCommit ? "git diff --name-only ${prevCommit} ${env.GIT_COMMIT}" : "git show --name-only --format="
-        
-        def changedFiles = sh(script: diffCmd, returnStdout: true).trim().split('\n')
-        def allServices = getServiceList()
-        
-        for (file in changedFiles) {
-            for (svc in allServices) {
+        sh 'git fetch origin +refs/heads/*:refs/remotes/origin/*'
+
+        def diffCmd = """
+            git diff --name-only origin/main...HEAD
+        """
+
+        def changedFiles = sh(script: diffCmd, returnStdout: true).trim()
+
+        if (!changedFiles) {
+            echo "⚠ Không có diff -> coi như FIRST BUILD hoặc full rebuild"
+            return allServices
+        }
+
+        def changedServices = []
+
+        changedFiles.split('\n').each { file ->
+            allServices.each { svc ->
                 if (file.startsWith("src/${svc}/") && !changedServices.contains(svc)) {
                     changedServices.add(svc)
                 }
             }
         }
+
+        if (changedServices.isEmpty()) {
+            echo "⚠ Không detect service change -> fallback ALL"
+            return allServices
+        }
+
+        return changedServices
+
     } catch (Exception e) {
-        echo "⚠ Không thể xác định file thay đổi. Build ALL."
-        return getServiceList()
+        echo "⚠ Git diff fail (${e.message}) -> BUILD ALL"
+        return allServices
     }
-    return changedServices
 }
 
 def resolveDockerfilePath(String service) {
