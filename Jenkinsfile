@@ -56,7 +56,6 @@ pipeline {
             steps {
                 script {
                     stash name: 'source', includes: 'src/**'
-                    def parallelStages = [:]
 
                     withCredentials([
                         usernamePassword(credentialsId: 'harbor-creds', usernameVariable: 'HARBOR_USER', passwordVariable: 'HARBOR_PASS'),
@@ -64,8 +63,11 @@ pipeline {
                         string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')
                     ]) {
                         def batchSize = 3
+                        
+                        // Chia danh sách các dịch vụ thành từng nhóm (batch) để tránh quá tải tài nguyên node
                         servicesToProcess.collate(batchSize).each { batch ->
                             def batchStages = [:]
+                            
                             batch.each { service ->
                                 def svc = service
                                 batchStages[svc] = {
@@ -79,14 +81,13 @@ pipeline {
                                             stage("${svc}: SonarQube") {
                                                 withSonarQubeEnv('sonarqube') {
                                                     def scannerHome = tool 'sonar-scanner'
-    
                                                     sh """
                                                         ${scannerHome}/bin/sonar-scanner \
                                                             -Dsonar.projectKey=${svc} \
                                                             -Dsonar.sources=${buildContext} \
                                                             -Dsonar.java.binaries=${buildContext} \
-                                                            -Dsonar.host.url=$SONAR_HOST_URL \
-                                                            -Dsonar.token=$SONAR_AUTH_TOKEN
+                                                            -Dsonar.host.url=\$SONAR_HOST_URL \
+                                                            -Dsonar.token=\$SONAR_AUTH_TOKEN
                                                     """
                                                 }
     
@@ -99,13 +100,13 @@ pipeline {
                                             }
                                         }
     
-                                        // --- 2. BUILD DOCKER (Bỏ BuildKit để không bị lỗi Buildx) ---
+                                        // --- 2. BUILD DOCKER ---
                                         stage("${svc}: Build Image") {
                                             sh """
                                                 docker build \
                                                     -f ${dockerfilePath} \
                                                     -t \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:${imageTag} \
-                                                    -t \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest \
+                                                    -t \top\${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest \
                                                     ${buildContext}
                                             """
                                         }
@@ -123,7 +124,9 @@ pipeline {
                                     }
                                 }
                             }
-                        parallel parallelStages
+                            // Chạy song song các service thuộc batch hiện tại
+                            parallel batchStages
+                        } 
                     }
                 }
             }
