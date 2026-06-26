@@ -63,64 +63,66 @@ pipeline {
                         string(credentialsId: 'HARBOR_REGISTRY_URL', variable: 'SECRET_REGISTRY_URL'),
                         string(credentialsId: 'sonar-token', variable: 'SONAR_TOKEN')
                     ]) {
-                        servicesToProcess.each { service ->
-                            def svc = service 
-
-                            parallelStages[svc] = {
-                                node {
-                                    unstash 'source'
-                                    def dockerfilePath = resolveDockerfilePath(svc)
-                                    def buildContext   = (svc == 'cartservice') ? 'src/cartservice/src' : "src/${svc}"
-
-                                    // --- 1. SONARQUBE CHẶN LỖI ---
-                                    if (params.RUN_SONAR) {
-                                        stage("${svc}: SonarQube") {
-                                            withSonarQubeEnv('sonarqube') {
-                                                def scannerHome = tool 'sonar-scanner'
-
-                                                sh """
-                                                    ${scannerHome}/bin/sonar-scanner \
-                                                        -Dsonar.projectKey=${svc} \
-                                                        -Dsonar.sources=${buildContext} \
-                                                        -Dsonar.java.binaries=${buildContext} \
-                                                        -Dsonar.host.url=$SONAR_HOST_URL \
-                                                        -Dsonar.token=$SONAR_AUTH_TOKEN
-                                                """
-                                            }
-
-                                            timeout(time: 5, unit: 'MINUTES') {
-                                                def qg = waitForQualityGate()
-                                                if (qg.status != 'OK') {
-                                                    error "✗ ${svc} fail SonarQube: ${qg.status}"
+                        def batchSize = 3
+                        servicesToProcess.collate(batchSize).each { batch ->
+                            def batchStages = [:]
+                            batch.each { service ->
+                                def svc = service
+                                batchStages[svc] = {
+                                    node {
+                                        unstash 'source'
+                                        def dockerfilePath = resolveDockerfilePath(svc)
+                                        def buildContext   = (svc == 'cartservice') ? 'src/cartservice/src' : "src/${svc}"
+    
+                                        // --- 1. SONARQUBE CHẶN LỖI ---
+                                        if (params.RUN_SONAR) {
+                                            stage("${svc}: SonarQube") {
+                                                withSonarQubeEnv('sonarqube') {
+                                                    def scannerHome = tool 'sonar-scanner'
+    
+                                                    sh """
+                                                        ${scannerHome}/bin/sonar-scanner \
+                                                            -Dsonar.projectKey=${svc} \
+                                                            -Dsonar.sources=${buildContext} \
+                                                            -Dsonar.java.binaries=${buildContext} \
+                                                            -Dsonar.host.url=$SONAR_HOST_URL \
+                                                            -Dsonar.token=$SONAR_AUTH_TOKEN
+                                                    """
+                                                }
+    
+                                                timeout(time: 5, unit: 'MINUTES') {
+                                                    def qg = waitForQualityGate()
+                                                    if (qg.status != 'OK') {
+                                                        error "✗ ${svc} fail SonarQube: ${qg.status}"
+                                                    }
                                                 }
                                             }
                                         }
-                                    }
-
-                                    // --- 2. BUILD DOCKER (Bỏ BuildKit để không bị lỗi Buildx) ---
-                                    stage("${svc}: Build Image") {
-                                        sh """
-                                            docker build \
-                                                -f ${dockerfilePath} \
-                                                -t \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:${imageTag} \
-                                                -t \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest \
-                                                ${buildContext}
-                                        """
-                                    }
-
-                                    // --- 3. PUSH LUÔN SAU KHI BUILD ---
-                                    if (params.PUSH_IMAGES) {
-                                        stage("${svc}: Push Image") {
+    
+                                        // --- 2. BUILD DOCKER (Bỏ BuildKit để không bị lỗi Buildx) ---
+                                        stage("${svc}: Build Image") {
                                             sh """
-                                                echo "\$HARBOR_PASS" | docker login \${SECRET_REGISTRY_URL} -u "\$HARBOR_USER" --password-stdin
-                                                docker push \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:${imageTag}
-                                                docker push \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest
+                                                docker build \
+                                                    -f ${dockerfilePath} \
+                                                    -t \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:${imageTag} \
+                                                    -t \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest \
+                                                    ${buildContext}
                                             """
+                                        }
+    
+                                        // --- 3. PUSH LUÔN SAU KHI BUILD ---
+                                        if (params.PUSH_IMAGES) {
+                                            stage("${svc}: Push Image") {
+                                                sh """
+                                                    echo "\$HARBOR_PASS" | docker login \${SECRET_REGISTRY_URL} -u "\$HARBOR_USER" --password-stdin
+                                                    docker push \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:${imageTag}
+                                                    docker push \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest
+                                                """
+                                            }
                                         }
                                     }
                                 }
                             }
-                        }
                         parallel parallelStages
                     }
                 }
