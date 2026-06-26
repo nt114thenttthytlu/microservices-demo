@@ -90,7 +90,7 @@ pipeline {
                                                     """
                                                 }
     
-                                                timeout(time: 20, unit: 'MINUTES') {
+                                                timeout(time: 25, unit: 'MINUTES') {
                                                     def qg = waitForQualityGate()
                                                     if (qg.status != 'OK') {
                                                         error "✗ ${svc} fail SonarQube: ${qg.status}"
