@@ -76,41 +76,22 @@ pipeline {
                                     if (params.RUN_SONAR) {
                                         stage("${svc}: SonarQube") {
                                             withSonarQubeEnv('sonarqube') {
-                                                if (svc == 'cartservice') {
-                                                    sh """
-                                                        # Tắt yêu cầu thư viện đa ngôn ngữ của .NET
-                                                        export DOTNET_SYSTEM_GLOBALIZATION_INVARIANT=1
-                                                        
-                                                        # Trỏ chính xác đến thư mục mà ta đã cài đặt .NET hôm trước
-                                                        export DOTNET_ROOT=/usr/local/bin
-                                                        export PATH="\$PATH:\$HOME/.dotnet/tools:/root/.dotnet/tools:/usr/local/bin"
-                                                        
-                                                        cd src/${svc}
-                                                        # Tải công cụ quét SonarQube cho .NET
-                                                        dotnet tool install --global dotnet-sonarscanner || true
-                                                        dotnet restore
-                                                        
-                                                        # Bắt đầu quét
-                                                        dotnet-sonarscanner begin /k:${svc} /d:sonar.host.url=\$SONAR_HOST_URL /d:sonar.login=\$SONAR_TOKEN /d:sonar.exclusions="**/Dockerfile*"
-                                                        dotnet build
-                                                        dotnet-sonarscanner end /d:sonar.login=\$SONAR_TOKEN
-                                                    """
-                                                } else {
-                                                    // Thêm -Dsonar.java.binaries để sửa lỗi adservice
-                                                    def scannerHome = tool 'sonar-scanner'
-                                                    sh """
-                                                        ${scannerHome}/bin/sonar-scanner \
-                                                            -Dsonar.projectKey=${svc} \
-                                                            -Dsonar.sources=${buildContext} \
-                                                            -Dsonar.java.binaries=${buildContext} \
-                                                            -Dsonar.login=\$SONAR_TOKEN
-                                                    """
-                                                }
+                                                def scannerHome = tool 'sonar-scanner'
+
+                                                sh """
+                                                    ${scannerHome}/bin/sonar-scanner \
+                                                        -Dsonar.projectKey=${svc} \
+                                                        -Dsonar.sources=${buildContext} \
+                                                        -Dsonar.java.binaries=${buildContext} \
+                                                        -Dsonar.host.url=$SONAR_HOST_URL \
+                                                        -Dsonar.token=$SONAR_AUTH_TOKEN
+                                                """
                                             }
+
                                             timeout(time: 5, unit: 'MINUTES') {
                                                 def qg = waitForQualityGate()
                                                 if (qg.status != 'OK') {
-                                                    error "✗ CHẶN LẠI: ${svc} trượt SonarQube (Trạng thái: ${qg.status}). Hủy Build!"
+                                                    error "✗ ${svc} fail SonarQube: ${qg.status}"
                                                 }
                                             }
                                         }
