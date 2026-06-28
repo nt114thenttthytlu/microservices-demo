@@ -106,7 +106,7 @@ pipeline {
                                                 docker build \
                                                     -f ${dockerfilePath} \
                                                     -t \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:${imageTag} \
-                                                    -t \top\${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest \
+                                                    -t \${SECRET_REGISTRY_URL}/${HARBOR_PROJECT}/${svc}:latest \
                                                     ${buildContext}
                                             """
                                         }
