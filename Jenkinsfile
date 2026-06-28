@@ -139,7 +139,7 @@ pipeline {
                     expression { !servicesToProcess.isEmpty() }
                     expression { params.UPDATE_GITOPS }
                     expression { params.PUSH_IMAGES }
-                    branch 'main'
+                    expression { env.BRANCH_NAME == 'main' || env.GIT_BRANCH == 'origin/main' || env.GIT_BRANCH == 'main' }
                 }
             }
             steps {
