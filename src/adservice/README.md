@@ -26,8 +26,10 @@ From `src/adservice/`, run:
 docker build ./
 ```
 
+
+
+
+
+
 ## Trigger build single microservice
-
-Changes to trigger build
-
-
+Trigger build on only adservice
