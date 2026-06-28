@@ -244,15 +244,15 @@ def getBuildServices() {
     try {
         sh 'git fetch origin +refs/heads/*:refs/remotes/origin/*'
 
-        def diffCmd = """
-            git diff --name-only origin/main...HEAD
-        """
+        def diffCmd = ""
 
-        def changedFiles = sh(script: diffCmd, returnStdout: true).trim()
-
-        if (!changedFiles) {
-            echo "⚠ Không có diff -> coi như FIRST BUILD hoặc full rebuild"
-            return allServices
+        // Kiểm tra nếu đang chạy trên nhánh main (dành cho Multibranch Pipeline)
+        if (env.BRANCH_NAME == 'main' || env.GIT_BRANCH == 'origin/main' || env.GIT_BRANCH == 'main') {
+            // Lấy danh sách các file bị thay đổi trong chính commit vừa được push/merge
+            diffCmd = "git diff-tree --no-commit-id --name-only -r HEAD"
+        } else {
+            // Nếu đang ở nhánh khác (Feature, Hotfix...), so sánh nhánh hiện tại với main
+            diffCmd = "git diff --name-only origin/main...HEAD"
         }
 
         def changedServices = []
