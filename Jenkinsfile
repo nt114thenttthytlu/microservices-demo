@@ -256,6 +256,17 @@ def getBuildServices() {
             diffCmd = "git diff --name-only origin/main...HEAD"
         }
 
+        // --- BẮT BUỘC PHẢI CÓ DÒNG NÀY ---
+        // Thực thi lệnh diffCmd vừa tạo ở trên và gán kết quả vào biến changedFiles
+        def changedFiles = sh(script: diffCmd, returnStdout: true).trim()
+
+        // --- BẮT BUỘC PHẢI CÓ ĐOẠN NÀY ---
+        // Xử lý trường hợp không có file nào thay đổi để tránh lỗi rỗng
+        if (!changedFiles) {
+            echo "⚠ Không có diff -> coi như FIRST BUILD hoặc full rebuild"
+            return allServices
+        }
+
         def changedServices = []
 
         changedFiles.split('\n').each { file ->
