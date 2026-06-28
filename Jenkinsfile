@@ -235,7 +235,6 @@ def getServiceList() {
             'shippingservice','shoppingassistantservice']
 }
 
-}
 
 def getBuildServices() {
     if (params.BUILD_TARGET == 'all') return getServiceList()
