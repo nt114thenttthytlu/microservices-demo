@@ -249,8 +249,9 @@ def getBuildServices() {
 
         // Kiểm tra nếu đang chạy trên nhánh main (dành cho Multibranch Pipeline)
         if (env.BRANCH_NAME == 'main' || env.GIT_BRANCH == 'origin/main' || env.GIT_BRANCH == 'main') {
-            // Lấy danh sách các file bị thay đổi trong chính commit vừa được push/merge
-            diffCmd = "git diff-tree --no-commit-id --name-only -r HEAD"
+            // So sánh commit hiện tại (HEAD) với commit ngay trước đó (HEAD^1) của nhánh main.
+            // Cách này giải quyết triệt để lỗi không nhận diện được file thay đổi từ Merge Commit.
+            diffCmd = "git diff --name-only HEAD^1 HEAD"
         } else {
             // Nếu đang ở nhánh khác (Feature, Hotfix...), so sánh nhánh hiện tại với main
             diffCmd = "git diff --name-only origin/main...HEAD"
