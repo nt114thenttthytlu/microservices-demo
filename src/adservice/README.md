@@ -25,7 +25,5 @@ From `src/adservice/`, run:
 ```
 docker build ./
 ```
-## Triggering changes for single service build
 
-Trigger#1
 
